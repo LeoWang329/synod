@@ -4,18 +4,22 @@
 
 ## 0. 一句话
 
-**Claude Code** 负责拆分 / 规划 / 验收 / 协调,**不亲自写功能代码**;经 **agent-bridge** 把活派出去:**deepseek-v4-pro** 做复杂功能、**minimax-m3** 做简单功能、**codex** 审核 + 测试。代码出问题由 Claude Code **确认**,向对应开发 agent **下发修改指令**,再测试验收,**循环到没有任何问题为止**。
+**Claude Code** 负责拆分 / 规划 / 验收 / 协调,**不亲自写功能代码**;**动手前,先把全部实施、开发、测试落成一份具体、可执行的 plan,再调用对应的 agent-bridge agent 操作**;经 **agent-bridge** 把活派出去:**deepseek-v4-pro** 做复杂功能、**minimax-m3** 做简单功能、**codex** 审核 + 测试。代码出问题由 Claude Code **确认**,向对应开发 agent **下发修改指令**,再测试验收,**循环到没有任何问题为止**。
 
 ## 1. 角色与分工
 
 | 角色 | 职责 | 经由 | 会话配置(agent-bridge) |
 |---|---|---|---|
 | **Claude Code** | 拆分任务、规划、定**可测的验收标准**、派活、triage 缺陷、下发修改指令、最终验收、提交 git | 本体(用 `agent_bridge_*` MCP 工具或 CLI 派发) | — |
-| **deepseek-v4-pro** | **复杂功能**开发(核心逻辑、并发、协议解析、多文件、棘手边界) | agent-bridge · omp | `--agent omp --model deepseek-v4-pro --effort xhigh --write` |
+| **deepseek-v4-pro** | **复杂功能**开发(核心逻辑、并发、协议解析、多文件、棘手边界) | agent-bridge · omp | `--agent omp --model deepseek/deepseek-v4-pro --effort xhigh --write` |
 | **minimax-m3** | **简单功能**开发(单函数、样板、配置、glue、直白小改) | agent-bridge · omp | `--agent omp --model minimax-m3 --effort high --write` |
 | **codex** | **审核 + 测试**(审 diff 找真缺陷、跑/补测试、给裁决) | agent-bridge · codex | 审查 `read-only`;需要跑测试时才给可执行(`--write`) |
 
+> **模型必须用 `provider/model` 限定形式**:omp 里同名模型可能落到多个 provider,只写 `minimax-m3` 会被解析到 `kilo`(本机无 key,直接失败)。本机已配 provider 见 `~/.omp/agent/config.yml`:minimax → **`minimax-code-cn/MiniMax-M3`**(baseUrl `api.minimaxi.com`),deepseek → **`deepseek/deepseek-v4-pro`**。换机器前先核对该文件里的 provider 名。
+>
 > Claude Code 是大脑,deepseek/minimax 是手,codex 是质检。指挥本身**不下场写功能代码**(除非第 4 节的兜底升级)。
+>
+> 测试用什么、怎么分层(契约测试 vs 集成验收)见 [`PROTOTYPE.md`](PROTOTYPE.md) §7.1。
 
 ## 2. 复杂 vs 简单(派给谁)
 
@@ -26,12 +30,17 @@
 ## 3. 主循环(核心)
 
 ```
-拆分规划 → [派发开发] → [审核+测试] → triage → 有问题? ──是──> [下发修改] → 回到“审核+测试”
-                                                    └──否──> 任务验收 → 提交 → 下一个任务
+落地可执行 plan → [派发开发] → [审核+测试] → triage → 有问题? ──是──> [下发修改] → 回到“审核+测试”
+                                                       └──否──> 任务验收 → 提交 → 下一个任务
 ```
 
-0. **拆分规划(Claude Code)**:读需求(如 `docs/PROTOTYPE.md`),拆成**小而可验收**的任务;每个任务标 **复杂/简单**,并写清**可测的验收标准**。
-1. **派发(Claude Code → 开发 agent)**:对每个任务,开对应 agent 的会话,发送「任务说明 + 涉及文件 + 验收标准 + write 模式直接改文件」(模板见 §6)。
+0. **落地可执行 plan(Claude Code,先规划后动手)**:读需求(如 `docs/PROTOTYPE.md`),把**全部实施 / 开发 / 测试**落成一份**具体、可执行**的 plan——
+   - 拆成**小而可验收**的任务,排好**顺序与依赖**;
+   - 每个任务写清:**复杂/简单 → 派给谁**、**涉及哪些文件**、**具体要做什么**、**可测的验收标准**、**怎么测(具体命令)**;
+   - 标出**并发约束**(哪些能并行、哪些必须串行,见 §5)。
+
+   **这份 plan 定下来之前,不调用任何 agent-bridge agent。** plan 先明确写出(给用户过一眼),再开始派发。
+1. **派发(Claude Code → 开发 agent)**:**按 plan**,对每个任务开对应 agent 的会话,发送「任务说明 + 涉及文件 + 验收标准 + write 模式直接改文件」(模板见 §6)。
 2. **收开发结果**:agent 改完文件并自述改动。Claude Code 先粗看是否跑题/越界。
 3. **审核 + 测试(Claude Code → codex)**:开 codex 会话,指向本次改动,要求「找真实缺陷 + 跑测试(或补测试)+ 给 `SOUND`/`HAS-DEFECTS`」(模板见 §6)。
 4. **triage(Claude Code)**:判定 codex 的发现哪些是**真问题**(确认),过滤误报。
@@ -98,6 +107,7 @@
 
 ## 7. Claude Code 的纪律
 
+- **先 plan 后派**:任何派发之前,先有一份覆盖全部开发/测试的**具体、可执行**的 plan;plan 没落地,不调用任何 agent。
 - **不下场写功能代码**(除非 §4 兜底升级);专注拆分、判定、协调、验收。
 - **验收标准必须可测、客观**——能用一条命令/一段输出判定的,不要主观"看着差不多"。
 - **对用户透明**:每个任务的状态、当前第几轮、codex 裁决、最终验收结果都要报。
@@ -105,10 +115,10 @@
 
 ## 8. 套到 Synod MVP1 上(示例)
 
-以 `docs/PROTOTYPE.md` 的 MVP1(单 agent 流式 CLI)为例,Claude Code 大致会:
+以 `docs/PROTOTYPE.md` 的 MVP1(自包含流式 CLI)为例,Claude Code 大致会:
 
-1. 拆成 2–3 个小任务:① 拉起/连上桥拿 url(简单→minimax)② SSE 订阅 + `text_delta` 逐字打印(复杂→deepseek)③ 开会话/发消息/退出 close 的串接(简单→minimax)。
+1. 拆成几个小任务:① 从 agent-bridge fork `src/backend.mjs`——搬两个会话类 + 工具、解耦成 `EventEmitter`、删掉 daemon/MCP/SSE/PID(复杂→deepseek)② CLI 入口:`doctor` 体检 + 开一个 omp 会话 + 订阅 `'delta'` 逐字打印 + 退出 `close`(简单→minimax)③ 多会话并行分区 + REPL + `Ctrl-C` 清理(复杂→deepseek)。
 2. 各自派发(write 模式),收开发结果。
-3. codex 审 + 跑(A1:能逐字流出、退出无残留会话)。
-4. 有问题 → Claude Code 确认 → 下发修改 → 复测;直到 A1 过。
+3. codex 审 + 跑(A1:逐字流出、退出**无残留 omp 子进程**)。
+4. 有问题 → Claude Code 确认 → 下发修改 → 复测;直到验收过。
 5. Claude Code 提交,MVP1 收工。
