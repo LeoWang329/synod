@@ -7,5 +7,6 @@ logs/
 dist/
 coverage/
 .codex/
-# 本地机器相关的 MCP 注册(含绝对路径),不提交;按 README「如何启动」重建
+# 防御性忽略:Synod 运行/开发都不需要项目级 .mcp.json
+# (agent-bridge 作为 Claude Code 插件自带 MCP 工具,见 README);此处仅防止误提交本地实验配置
 .mcp.json
