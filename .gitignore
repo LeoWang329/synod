@@ -1,0 +1,11 @@
+.DS_Store
+node_modules/
+.env
+.env.*
+*.log
+logs/
+dist/
+coverage/
+.codex/
+# 本地机器相关的 MCP 注册(含绝对路径),不提交;按 README「如何启动」重建
+.mcp.json
