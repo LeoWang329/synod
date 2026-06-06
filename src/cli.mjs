@@ -9,6 +9,7 @@
 
 import path from "node:path";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 import { doctor, openBackend } from "./backend.mjs";
 
 // ── CLI parsing ──────────────────────────────────────────────────────
@@ -396,7 +397,7 @@ async function runTasks(tasks, report, baseOpts) {
       const tr = taskResults.find((r) => r.label === label);
       const outcome = tr?.ok !== false ? "" : " [FAILED]";
       process.stdout.write(
-        `[${label}] ${sum.agent} | ${sum.model || "default"} | ${sum.status}${outcome}\n`,
+        `[${label}] ${sum.agent} | ${sum.model || "default"} | effort=${sum.effort || "default"} | ${sum.status}${outcome}\n`,
       );
       if (preview) process.stdout.write(`  ${preview}\n`);
       if (tr?.reason) process.stdout.write(`  error: ${tr.reason}\n`);
@@ -650,58 +651,65 @@ async function main() {
   return await exitPromise;
 }
 
-// ── Module-level SIGINT ──────────────────────────────────────────────
 let gSessions = null;
-let gSigintCount = 0;
 
-process.on("SIGINT", () => {
-  gSigintCount += 1;
+// ── Run guard: only execute main + register handlers when this file is the entry point ──
+const _isMain =
+  process.argv[1] &&
+  fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 
-  const sessions = gSessions;
-  if (!sessions || sessions.size === 0) {
-    process.exit(0);
-    return;
-  }
+if (_isMain) {
+  // ── Module-level SIGINT ──────────────────────────────────────────────
+  let gSigintCount = 0;
 
-  if (gSigintCount > 1) {
-    process.stderr.write("\nForce exiting...\n");
-    // Best-effort close before forced exit (no waiting)
-    closeAllSessions(sessions);
-    process.exit(1);
-  }
+  process.on("SIGINT", () => {
+    gSigintCount += 1;
 
-  process.stderr.write("\nInterrupted. Cleaning up...\n");
-
-  // Async cleanup: abort all concurrently (each with a timeout),
-  // then unconditionally close all sessions before exiting.
-  (async () => {
-    const ABORT_TIMEOUT_MS = 3000;
-    const abortPromises = [];
-    for (const [, info] of sessions) {
-      abortPromises.push(
-        Promise.race([
-          (async () => { try { await info.session.abort(); } catch {} })(),
-          new Promise((r) => setTimeout(r, ABORT_TIMEOUT_MS)),
-        ]),
-      );
+    const sessions = gSessions;
+    if (!sessions || sessions.size === 0) {
+      process.exit(0);
+      return;
     }
-    try {
-      await Promise.all(abortPromises);
-    } catch {} // shouldn't happen with the timeout guard, but belt-and-suspenders
-    closeAllSessions(sessions);
-    process.exit(0);
-  })();
-});
 
-// ── Error handlers ───────────────────────────────────────────────────
-process.on("uncaughtException", (err) => {
-  process.stderr.write(`synod: uncaught: ${err.stack || err.message}\n`);
-  process.exit(1);
-});
+    if (gSigintCount > 1) {
+      process.stderr.write("\nForce exiting...\n");
+      closeAllSessions(sessions);
+      process.exit(1);
+    }
 
-main()
-  .then((code) => process.exit(code ?? 0))
-  .catch((err) => {
-    process.stderr.write(`synod: fatal: ${err.stack || err.message}\n`);
+    process.stderr.write("\nInterrupted. Cleaning up...\n");
+
+    (async () => {
+      const ABORT_TIMEOUT_MS = 3000;
+      const abortPromises = [];
+      for (const [, info] of sessions) {
+        abortPromises.push(
+          Promise.race([
+            (async () => { try { await info.session.abort(); } catch {} })(),
+            new Promise((r) => setTimeout(r, ABORT_TIMEOUT_MS)),
+          ]),
+        );
+      }
+      try {
+        await Promise.all(abortPromises);
+      } catch {}
+      closeAllSessions(sessions);
+      process.exit(0);
+    })();
+  });
+
+  // ── Error handlers ───────────────────────────────────────────────────
+  process.on("uncaughtException", (err) => {
+    process.stderr.write(`synod: uncaught: ${err.stack || err.message}\n`);
     process.exit(1);
   });
+
+  main()
+    .then((code) => process.exit(code ?? 0))
+    .catch((err) => {
+      process.stderr.write(`synod: fatal: ${err.stack || err.message}\n`);
+      process.exit(1);
+    });
+}
+
+export { parseArgs, createLineBuffer, parseOpenArgs, AGENTS };
