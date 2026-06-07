@@ -1,8 +1,85 @@
+import { createInterface } from "node:readline";
 import { createCtx } from "./ctx.mjs";
+import { createApprove } from "./api/approve.mjs";
 import { createLogger } from "./logger.mjs";
 import { createAgent } from "./api/agent.mjs";
 import { createBash } from "./api/bash.mjs";
 import { openBackend as realOpenBackend } from "../backend.mjs";
+
+/**
+ * makeQuestion(input, output) — factory for a single-owner `question()`
+ * backed by a shared (lazy) `readline.Interface` on `input`.
+ *
+ * The returned `question(prompt, { signal })` method enforces **stdin
+ * single-ownership**: only one question may be pending at a time.
+ * A concurrent call throws synchronously `"a question is already pending"`.
+ *
+ * This is the canonical implementation — both `defaultIo()` and the
+ * smoke tests construct their io through this factory to avoid
+ * mock-vs-real divergence.
+ */
+export function makeQuestion(input, output) {
+  let _rl = null;
+  let _pending = false;
+
+  function getRl() {
+    if (!_rl) _rl = createInterface({ input, terminal: false });
+    return _rl;
+  }
+
+  function question(prompt, { signal } = {}) {
+    if (_pending) {
+      throw new Error("a question is already pending");
+    }
+    _pending = true;
+    if (prompt != null) output.write(String(prompt));
+
+    const rl = getRl();
+
+    return new Promise((resolve, reject) => {
+      const onLine = (line) => {
+        cleanup();
+        resolve(line);
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+      };
+      const cleanup = () => {
+        _pending = false;
+        rl.removeListener("line", onLine);
+        if (signal) signal.removeEventListener("abort", onAbort);
+      };
+      rl.once("line", onLine);
+      if (signal) {
+        if (signal.aborted) {
+          cleanup();
+          reject(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+    });
+  }
+
+  return { question };
+}
+
+/**
+ * Build the default I/O interface backed by real process stdio.
+ *
+ * Uses `makeQuestion(process.stdin, process.stdout)` so the single-
+ * pending guard is enforced on the real path, not just in mocks.
+ * The underlying readline is created lazily on first question().
+ */
+function defaultIo() {
+  const { question } = makeQuestion(process.stdin, process.stdout);
+  return {
+    stdout: process.stdout,
+    stdin: process.stdin,
+    question,
+  };
+}
 
 /**
  * createRuntime — DI container for the flow engine.
@@ -13,14 +90,16 @@ import { openBackend as realOpenBackend } from "../backend.mjs";
  *   deps.fs          – filesystem sink  (test: memory sink)
  *   deps.clock       – time source      (test: fixed clock)
  *   deps.openBackend – backend factory  (default: real openBackend)
- *   deps.io          – stdin/stdout     (placeholder for F3)
+ *   deps.io          – stdin/stdout     (default: real process stdio
+ *                       with a shared lazy readline for question())
  *
- * Returns { createCtx, agent, disposeRun, logger, fs, clock, openBackend, io }.
+ * Returns { createCtx, agent, bash, approve, disposeRun, logger, fs, clock, openBackend, io }.
  *
  * Live run-state (reused sessions) is held in a per-run Map keyed by
  * ctx.runId — never stored on the pure-data ctx itself.
  */
 export function createRuntime({ fs, clock, openBackend, io } = {}) {
+  const resolvedIo = io ?? defaultIo();
   const logger = createLogger({ fs, clock });
   const resolvedOpenBackend = openBackend ?? realOpenBackend;
 
@@ -86,6 +165,8 @@ export function createRuntime({ fs, clock, openBackend, io } = {}) {
     agent,
     /** bash() primitive — run a shell command. */
     bash,
+    /** approve() primitive — present content, wait for human decision. */
+    approve: createApprove({ io: resolvedIo, logger }),
     /** disposeRun(ctx) — close reused sessions for a run. */
     disposeRun,
     /** Logger instance bound to the injected sinks. */
@@ -96,7 +177,7 @@ export function createRuntime({ fs, clock, openBackend, io } = {}) {
     clock,
     /** Backend factory — injected sentinel or the real openBackend. */
     openBackend: resolvedOpenBackend,
-    /** I/O interface — injected sentinel or undefined (placeholder for F3). */
-    io,
+    /** I/O interface — resolved to defaultIo() when not injected. */
+    io: resolvedIo,
   };
 }

@@ -236,9 +236,11 @@ describe("runtime", () => {
     assert.ok(runtime.openBackend !== undefined);
   });
 
-  it("io is undefined when not injected", () => {
+  it("io defaults to real process stdio when not injected", () => {
     const runtime = createRuntime({ fs: noopFs(), clock: () => 0 });
-    assert.strictEqual(runtime.io, undefined);
+    assert.ok(runtime.io && typeof runtime.io === "object", "io should default to real process stdio");
+    assert.strictEqual(runtime.io.stdout, process.stdout);
+    assert.strictEqual(runtime.io.stdin, process.stdin);
   });
 
   it("exposes fs and clock for transparency", () => {

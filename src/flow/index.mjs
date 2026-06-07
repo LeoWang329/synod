@@ -14,3 +14,7 @@ export function agent(ctx, opts) {
 export function bash(ctx, cmd, opts) {
   return getCurrentRuntime().bash(ctx, cmd, opts);
 }
+
+export function approve(ctx, opts) {
+  return getCurrentRuntime().approve(ctx, opts);
+}
