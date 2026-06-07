@@ -29,7 +29,7 @@ describe("discovery", () => {
   it("discovers flow names from filenames (strips .mjs)", async () => {
     const flows = await discoverFlows(VALID_DIR);
     const names = flows.map((f) => f.name).sort();
-    assert.deepStrictEqual(names, ["linear"]);
+    assert.deepStrictEqual(names, ["echo-input", "linear"]);
   });
   it("extracts meta.description from valid flows", async () => {
     const flows = await discoverFlows(VALID_DIR);
