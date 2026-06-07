@@ -10,11 +10,11 @@
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { doctor, openBackend } from "./backend.mjs";
+import { doctor, openBackend as realOpenBackend } from "./backend.mjs";
+import { createSessionManager, createLineBuffer, checkAgentAvailable, AGENTS } from "./session-manager.mjs";
+import { parseRelay, createRelayRegistry } from "./relay.mjs";
 
 // ── CLI parsing ──────────────────────────────────────────────────────
-const AGENTS = ["omp", "codex"];
-
 function parseArgs(argv) {
   const out = {
     agent: "omp",
@@ -97,8 +97,8 @@ function parseArgs(argv) {
   return out;
 }
 
-function printHelp() {
-  process.stdout.write(
+function printHelp(stdout = process.stdout) {
+  stdout.write(
     [
       "synod — streaming CLI (multi-session)",
       "",
@@ -120,121 +120,14 @@ function printHelp() {
       "  /sessions             List all sessions",
       "  @<label> <msg>        Send to a session",
       "  @all <msg>            Broadcast to all sessions",
+      "  /relay <from>-><to>   Forward source turn text to target",
+      "  /unrelay <from>-><to> Remove a relay rule",
+      "  /relays               List active relay rules",
       "  /exit, /quit          Close all sessions and quit",
       "  Ctrl-D (EOF)          Same as /exit",
       "",
     ].join("\n"),
   );
-}
-
-// ── Doctor gate ──────────────────────────────────────────────────────
-function envHint(agent) {
-  return agent === "omp" ? "OMP_BIN" : "CODEX_BIN";
-}
-
-function checkAgentAvailable(agent, report) {
-  const entry = report[agent];
-  if (!entry) {
-    process.stderr.write(
-      `synod: unknown agent "${agent}". Available: ${AGENTS.join(", ")}.\n`,
-    );
-    return false;
-  }
-  if (entry.available) return true;
-  process.stderr.write(
-    [
-      `synod: agent "${agent}" is not available.`,
-      `  - probed: ${process.env[envHint(agent)] || agent}`,
-      `  - install it, or point ${envHint(agent)} at the real binary.`,
-      "",
-    ].join("\n"),
-  );
-  return false;
-}
-
-// ── Session helpers ──────────────────────────────────────────────────
-const agentCounters = { omp: 0, codex: 0 };
-
-function allocLabel(agent) {
-  agentCounters[agent] = (agentCounters[agent] || 0) + 1;
-  return `${agent}#${agentCounters[agent]}`;
-}
-
-/**
- * Create a line buffer that accumulates deltas and emits complete lines
- * prefixed with [label].  Incomplete trailing text stays in the buffer
- * until flush() is called (on idle).
- */
-function createLineBuffer(label) {
-  let buf = "";
-  return {
-    feed(chunk) {
-      buf += chunk;
-      const lines = buf.split("\n");
-      buf = /** @type {string} */ (lines.pop());
-      for (const line of lines) {
-        process.stdout.write(`[${label}] ${line}\n`);
-      }
-    },
-    flush() {
-      if (buf.length > 0) {
-        process.stdout.write(`[${label}] ${buf}\n`);
-        buf = "";
-      }
-    },
-  };
-}
-
-async function openSession({ agent, model, effort, write, cwd, report }) {
-  if (!checkAgentAvailable(agent, report)) return null;
-  try {
-    return await openBackend({ agent, cwd, write, model, effort });
-  } catch (err) {
-    process.stderr.write(`synod: failed to open ${agent} session: ${err.message}\n`);
-    return null;
-  }
-}
-
-
-/**
- * Per-session FIFO send queue: ensures turns within a single session are
- * serialised (each turn completes before the next starts), while different
- * sessions still run in parallel.  Uses send(wait:true) so the backend's
- * own turn-started / waitIdle gating protects against stale idle windows.
- */
-function createSendQueue(session) {
-  let chain = Promise.resolve();
-  return {
-    /** Enqueue a message; returns a Promise that resolves when the turn
-     *  completes (or rejects on send error).  The chain itself survives
-     *  rejections so later messages still get sent. */
-    enqueue(msg) {
-      const task = chain.then(() => session.send(msg, { wait: true }));
-      chain = task.catch(() => {});
-      return task;
-    },
-    /** Resolves when every queued send has settled (success or error). */
-    drain() { return chain; },
-  };
-}
-
-
-function closeAllSessions(sessions) {
-  for (const [, info] of sessions) {
-    try { info.session.close(); } catch {}
-  }
-}
-
-function listSessions(sessions, currentLabel) {
-  process.stdout.write("\n");
-  for (const [label, info] of sessions) {
-    const marker = label === currentLabel ? "*" : " ";
-    const sum = info.session.summary();
-    process.stdout.write(
-      ` ${marker} ${label}  ${sum.agent}  ${sum.model || "default"}  ${sum.status}\n`,
-    );
-  }
-  process.stdout.write("\n");
 }
 
 /** Parse "/open --agent x --model y ..." into an options object.
@@ -276,11 +169,11 @@ function parseOpenArgs(tokens) {
 }
 
 // ── REPL ─────────────────────────────────────────────────────────────
-function createRepl({ prompt, onLine, onClose }) {
+function createRepl({ prompt, onLine, onClose, stdin = process.stdin, stdout = process.stdout }) {
   const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: process.stdin.isTTY ?? false,
+    input: stdin,
+    output: stdout,
+    terminal: stdin.isTTY ?? false,
   });
   // Start paused so piped input isn't consumed before sessions are ready.
   rl.pause();
@@ -291,7 +184,7 @@ function createRepl({ prompt, onLine, onClose }) {
     if (exitRequested) return;
     const text = line.trim();
     if (!text) {
-      process.stdout.write(prompt);
+      stdout.write(prompt);
       return;
     }
     void onLine(text);
@@ -306,7 +199,7 @@ function createRepl({ prompt, onLine, onClose }) {
   return {
     resume() { rl.resume(); },
     writePrompt() {
-      if (!exitRequested && !closed) process.stdout.write(prompt);
+      if (!exitRequested && !closed) stdout.write(prompt);
     },
     closeRl() {
       exitRequested = true;
@@ -316,68 +209,46 @@ function createRepl({ prompt, onLine, onClose }) {
 }
 
 // ── Non-interactive task runner ──────────────────────────────────────
-async function runTasks(tasks, report, baseOpts) {
-  const sessions = new Map(); // label → { session, agent, lineBuf, task }
-
-  // Pre-check all agents
+async function runTasks(tasks, report, baseOpts, { openBackend, stdout = process.stdout, stderr = process.stderr } = {}) {
+  // Pre-check all agents (before opening sessions, so return 3 vs 4 is distinct)
   for (const task of tasks) {
-    if (!checkAgentAvailable(task.agent, report)) return 3;
+    if (!checkAgentAvailable(task.agent, report, stderr)) return 3;
   }
 
+  const sm = createSessionManager({
+    openBackend, stdout, stderr, report,
+    cwd: baseOpts.cwd,
+    defaults: { model: baseOpts.model, effort: baseOpts.effort, write: baseOpts.write },
+    onIdle: () => {}, // no prompt redraw in non-interactive mode
+  });
+
   // Wire module-level SIGINT to these sessions
-  gSessions = sessions;
+  gSessions = sm._sessions;
 
   try {
     // Open sessions sequentially
+    const taskMap = new Map(); // label → task
     for (const task of tasks) {
-      const label = allocLabel(task.agent);
-      process.stderr.write(`Opening ${label} (${task.agent})...\n`);
-      const session = await openSession({
-        agent: task.agent,
-        model: baseOpts.model,
-        effort: baseOpts.effort,
-        write: baseOpts.write,
-        cwd: baseOpts.cwd,
-        report,
-      });
-      if (!session) {
-        closeAllSessions(sessions);
+      const label = await sm.open({ agent: task.agent, announce: "task" });
+      if (!label) {
+        sm.closeAll();
         return 4;
       }
-
-      const lineBuf = createLineBuffer(label);
-      session.on("delta", (chunk) => lineBuf.feed(chunk));
-      session.on("error", (err) => {
-        process.stderr.write(`[${label} error] ${err.message}\n`);
-      });
-      session.on("status", ({ status }) => {
-        if (status === "idle") lineBuf.flush();
-      });
-
-      sessions.set(label, { session, agent: task.agent, lineBuf, task, sendQueue: createSendQueue(session) });
+      taskMap.set(label, task);
     }
 
     // Enqueue all tasks via per-session send queues (serial within session, parallel across)
     const sendResults = [];
-    for (const [label, info] of sessions) {
-      const p = info.sendQueue.enqueue(info.task.prompt);
-      sendResults.push({ label, promise: p });
-      p.catch((err) => {
-        process.stderr.write(`[${label} send error] ${err.message}\n`);
-      });
+    for (const [label, task] of taskMap) {
+      const p = sm.enqueue({ target: label, msg: task.prompt });
+      if (p) sendResults.push({ label, promise: p });
     }
 
     // Drain all queues (waits for every turn to complete)
-    const drains = [];
-    for (const [, info] of sessions) {
-      drains.push(info.sendQueue.drain());
-    }
-    await Promise.all(drains);
+    await sm.drainAll();
 
     // Flush any remaining buffered text
-    for (const [, info] of sessions) {
-      info.lineBuf.flush();
-    }
+    sm.flushAll();
 
     // Collect per-task results
     const settled = await Promise.allSettled(sendResults.map((r) => r.promise));
@@ -389,38 +260,44 @@ async function runTasks(tasks, report, baseOpts) {
 
     // Summary
     const anyFailed = taskResults.some((r) => !r.ok);
-    process.stdout.write("\n── Summary ──\n");
-    for (const [label, info] of sessions) {
+    stdout.write("\n── Summary ──\n");
+    for (const [label, info] of sm.entries()) {
       const sum = info.session.summary();
       const res = await info.session.result();
       const preview = (res.text || "").slice(0, 200).replace(/\n/g, " ");
       const tr = taskResults.find((r) => r.label === label);
       const outcome = tr?.ok !== false ? "" : " [FAILED]";
-      process.stdout.write(
+      stdout.write(
         `[${label}] ${sum.agent} | ${sum.model || "default"} | effort=${sum.effort || "default"} | ${sum.status}${outcome}\n`,
       );
-      if (preview) process.stdout.write(`  ${preview}\n`);
-      if (tr?.reason) process.stdout.write(`  error: ${tr.reason}\n`);
+      if (preview) stdout.write(`  ${preview}\n`);
+      if (tr?.reason) stdout.write(`  error: ${tr.reason}\n`);
     }
 
     return anyFailed ? 1 : 0;
 
   } finally {
-    closeAllSessions(sessions);
+    sm.closeAll();
     gSessions = null;
   }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
+async function main({
+  openBackend = realOpenBackend,
+  stdin = process.stdin,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  argv = process.argv,
+} = {}) {
+  const args = parseArgs(argv.slice(2));
   if (args._help) {
-    printHelp();
+    printHelp(stdout);
     return 0;
   }
   if (args._unknown) {
-    process.stderr.write(`synod: ${args._unknown}\n`);
-    process.stderr.write('Run "node src/cli.mjs --help" for usage.\n');
+    stderr.write(`synod: ${args._unknown}\n`);
+    stderr.write('Run "node src/cli.mjs --help" for usage.\n');
     return 2;
   }
 
@@ -429,23 +306,43 @@ async function main() {
 
   // ── Non-interactive ────────────────────────────────────────────────
   if (args.tasks.length > 0) {
-    return runTasks(args.tasks, report, { model: args.model, effort: args.effort, write: args.write, cwd });
+    return runTasks(args.tasks, report, { model: args.model, effort: args.effort, write: args.write, cwd }, { openBackend, stdout, stderr });
   }
 
   // ── Interactive mode ───────────────────────────────────────────────
-  const sessions = new Map(); // label → { session, agent, model, effort, lineBuf }
-  let currentLabel = null;
-
-  // Wire module-level SIGINT handler to these sessions
-  gSessions = sessions;
 
   // ── Exit gate ──────────────────────────────────────────────────────
   let resolveExit = () => {};
   const exitPromise = new Promise((resolve) => { resolveExit = resolve; });
 
+  // Create repl reference first so onIdle callback can reference repl.writePrompt
+  let repl;
+
+  // ── Relay registry (two-phase: created before sm, enqueue wired after) ──
+  let _smForRelay = null;
+  const registry = createRelayRegistry((to, msg) => {
+    if (_smForRelay) _smForRelay.enqueue({ target: to, msg });
+  });
+
+  const sm = createSessionManager({
+    openBackend, stdout, stderr, report, cwd,
+    defaults: { model: args.model, effort: args.effort, write: args.write },
+    onIdle: (label) => {
+      if (repl && label === sm.currentLabel) repl.writePrompt();
+    },
+    errorLeadingNewline: true,
+    onTurnComplete: (label, result) => registry.onTurnComplete(label, result.text),
+  });
+  _smForRelay = sm;
+
+  // Wire module-level SIGINT handler to these sessions
+  gSessions = sm._sessions;
+
   // ── REPL dispatch ──────────────────────────────────────────────────
-  const repl = createRepl({
+  repl = createRepl({
     prompt: "> ",
+    stdin,
+    stdout,
     onLine: async (line) => {
       // ── / commands ────────────────────────────────────────────────
       if (line.startsWith("/")) {
@@ -457,7 +354,63 @@ async function main() {
         }
 
         if (cmd === "/sessions") {
-          listSessions(sessions, currentLabel);
+          sm.list();
+          repl.writePrompt();
+          return;
+        }
+
+        if (cmd === "/relay") {
+          const spec = rest.join(" ");
+          const parsed = parseRelay(spec);
+          if (parsed.error) {
+            stderr.write(`${parsed.error}\n`);
+            repl.writePrompt();
+            return;
+          }
+          // Validate both labels exist
+          if (!sm._sessions.has(parsed.from)) {
+            stderr.write(`No session "${parsed.from}"\n`);
+            repl.writePrompt();
+            return;
+          }
+          if (!sm._sessions.has(parsed.to)) {
+            stderr.write(`No session "${parsed.to}"\n`);
+            repl.writePrompt();
+            return;
+          }
+          try {
+            registry.add(parsed.from, parsed.to);
+            stdout.write(`Relay added: ${parsed.from} -> ${parsed.to}\n`);
+          } catch (err) {
+            stderr.write(`${err.message}\n`);
+          }
+          repl.writePrompt();
+          return;
+        }
+
+        if (cmd === "/unrelay") {
+          const spec = rest.join(" ");
+          const parsed = parseRelay(spec);
+          if (parsed.error) {
+            stderr.write(`${parsed.error}\n`);
+          } else {
+            registry.remove(parsed.from, parsed.to);
+            stdout.write(`Relay removed: ${parsed.from} -> ${parsed.to}\n`);
+          }
+          repl.writePrompt();
+          return;
+        }
+
+        if (cmd === "/relays") {
+          const rules = registry.list();
+          if (rules.length === 0) {
+            stdout.write("No active relay rules.\n");
+          } else {
+            stdout.write("Active relays:\n");
+            for (const r of rules) {
+              stdout.write(`  ${r.from} -> ${r.to}\n`);
+            }
+          }
           repl.writePrompt();
           return;
         }
@@ -465,12 +418,10 @@ async function main() {
         if (cmd === "/use") {
           const target = rest[0];
           if (!target) {
-            process.stderr.write("Usage: /use <label>\n");
-          } else if (sessions.has(target)) {
-            currentLabel = target;
-            process.stdout.write(`Switched to ${target}\n`);
+            stderr.write("Usage: /use <label>\n");
           } else {
-            process.stderr.write(`No session "${target}"\n`);
+            const switched = sm.use(target);
+            if (switched) stdout.write(`Switched to ${target}\n`);
           }
           repl.writePrompt();
           return;
@@ -479,67 +430,28 @@ async function main() {
         if (cmd === "/open") {
           const opts = parseOpenArgs(rest);
           if (opts.error) {
-            process.stderr.write(`${opts.error}\n`);
+            stderr.write(`${opts.error}\n`);
             repl.writePrompt();
             return;
           }
 
           const agent = opts.agent || args.agent;
 
-          if (!AGENTS.includes(agent)) {
-            process.stderr.write(`Unknown agent: ${agent}\n`);
-            repl.writePrompt();
-            return;
-          }
-          if (!checkAgentAvailable(agent, report)) {
-            repl.writePrompt();
-            return;
-          }
-
-          const label = allocLabel(agent);
-          process.stdout.write(`Opening ${label} (${agent})...\n`);
-
-          const session = await openSession({
+          const label = await sm.open({
             agent,
-            model: opts.model ?? args.model,
-            effort: opts.effort ?? args.effort,
-            write: opts.write ?? args.write,
-            cwd,
-            report,
+            model: opts.model,
+            effort: opts.effort,
+            write: opts.write,
+            announce: "interactive",
           });
-          if (!session) {
-            repl.writePrompt();
-            return;
+          if (!label) {
+            // sm.open already wrote the error to stderr; just redraw prompt
           }
-
-          const lineBuf = createLineBuffer(label);
-          session.on("delta", (chunk) => lineBuf.feed(chunk));
-          session.on("error", (err) => {
-            process.stderr.write(`\n[${label} error] ${err.message}\n`);
-          });
-          // Status handler: flush on idle, redraw prompt if current.
-          session.on("status", ({ status }) => {
-            if (status === "idle") {
-              lineBuf.flush();
-              if (label === currentLabel) repl.writePrompt();
-            }
-          });
-
-          sessions.set(label, {
-            session,
-            agent,
-            model: opts.model ?? args.model,
-            effort: opts.effort ?? args.effort,
-            lineBuf,
-            sendQueue: createSendQueue(session),
-          });
-          currentLabel = label;
-          process.stdout.write(`Opened ${label} (${agent})\n`);
           repl.writePrompt();
           return;
         }
 
-        process.stderr.write(`Unknown command: ${cmd}\n`);
+        stderr.write(`Unknown command: ${cmd}\n`);
         repl.writePrompt();
         return;
       }
@@ -548,7 +460,7 @@ async function main() {
       if (line.startsWith("@")) {
         const spaceIdx = line.indexOf(" ");
         if (spaceIdx === -1) {
-          process.stderr.write("Usage: @<label> <message> or @all <message>\n");
+          stderr.write("Usage: @<label> <message> or @all <message>\n");
           repl.writePrompt();
           return;
         }
@@ -559,92 +471,45 @@ async function main() {
           return;
         }
 
-        if (target === "all") {
-          for (const [label, info] of sessions) {
-            info.sendQueue.enqueue(msg).catch((err) => {
-              process.stderr.write(`\n[${label} send error] ${err.message}\n`);
-            });
-          }
-        } else {
-          const info = sessions.get(target);
-          if (!info) {
-            process.stderr.write(`No session "${target}"\n`);
-            repl.writePrompt();
-            return;
-          }
-          info.sendQueue.enqueue(msg).catch((err) => {
-            process.stderr.write(`\n[${target} send error] ${err.message}\n`);
-          });
-        }
+        const ok = sm.enqueue({ target, msg });
+        if (ok === false) repl.writePrompt();
         // Don't redraw prompt — streaming output follows asynchronously;
         // the status handler will redraw when the turn finishes.
         return;
       }
 
       // ── Normal line → current session ─────────────────────────────
-      const info = sessions.get(currentLabel);
-      if (!info) {
-        process.stderr.write("No current session. Use /open to create one.\n");
-        repl.writePrompt();
-        return;
-      }
-      info.sendQueue.enqueue(line).catch((err) => {
-        process.stderr.write(`\n[${currentLabel} send error] ${err.message}\n`);
-      });
+      const ok = sm.enqueue({ msg: line });
+      if (ok === false) repl.writePrompt();
       // Don't redraw prompt — status handler will when turn finishes.
     },
 
     onClose: async () => {
-      // Drain every session's send queue (waits for all queued turns to complete)
-      for (const [, info] of sessions) {
-        try { await info.sendQueue.drain(); } catch {}
+      let exitCode = 0;
+      try {
+        await sm.drainAll();
+      } catch (err) {
+        exitCode = 1;
+        stderr.write(`synod: ${err.stack || err.message}\n`);
+      } finally {
+        // Clean up relay rules for all sessions being closed
+        for (const [label] of sm._sessions) {
+          registry.removeForLabel(label);
+        }
+        // Flush any trailing buffered text
+        sm.flushAll();
+        sm.closeAll();
+        gSessions = null;
+        resolveExit(exitCode);
       }
-      // Flush any trailing buffered text
-      for (const [, info] of sessions) {
-        info.lineBuf.flush();
-      }
-      closeAllSessions(sessions);
-      gSessions = null;
-      resolveExit(0);
     },
   });
 
   // ── Open default session ───────────────────────────────────────────
   // Created *after* repl so the status handler can reference repl.writePrompt.
-  const defaultLabel = allocLabel(args.agent);
-  {
-    const session = await openSession({
-      agent: args.agent,
-      model: args.model,
-      effort: args.effort,
-      write: args.write,
-      cwd,
-      report,
-    });
-    if (!session) return 3;
+  const defaultLabel = await sm.open({ agent: args.agent, announce: false });
+  if (!defaultLabel) return 3;
 
-    const lineBuf = createLineBuffer(defaultLabel);
-    session.on("delta", (chunk) => lineBuf.feed(chunk));
-    session.on("error", (err) => {
-      process.stderr.write(`\n[${defaultLabel} error] ${err.message}\n`);
-    });
-    session.on("status", ({ status }) => {
-      if (status === "idle") {
-        lineBuf.flush();
-        if (defaultLabel === currentLabel) repl.writePrompt();
-      }
-    });
-
-    sessions.set(defaultLabel, {
-      session,
-      agent: args.agent,
-      model: args.model,
-      effort: args.effort,
-      lineBuf,
-      sendQueue: createSendQueue(session),
-    });
-    currentLabel = defaultLabel;
-  }
   repl.resume();
   repl.writePrompt();
 
@@ -673,7 +538,10 @@ if (_isMain) {
 
     if (gSigintCount > 1) {
       process.stderr.write("\nForce exiting...\n");
-      closeAllSessions(sessions);
+      // closeAllSessions moved to session-manager; inline the logic
+      for (const [, info] of sessions) {
+        try { info.session.close(); } catch {}
+      }
       process.exit(1);
     }
 
@@ -693,7 +561,9 @@ if (_isMain) {
       try {
         await Promise.all(abortPromises);
       } catch {}
-      closeAllSessions(sessions);
+      for (const [, info] of sessions) {
+        try { info.session.close(); } catch {}
+      }
       process.exit(0);
     })();
   });
@@ -712,4 +582,4 @@ if (_isMain) {
     });
 }
 
-export { parseArgs, createLineBuffer, parseOpenArgs, AGENTS };
+export { main, parseArgs, createLineBuffer, parseOpenArgs, AGENTS };

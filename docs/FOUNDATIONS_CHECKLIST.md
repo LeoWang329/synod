@@ -66,4 +66,5 @@
 
 > 由我(Claude Code)在每轮闭环后更新此处。
 > - **地基 1 ✅ 全部完成**(T1.1/T1.2/T1.3;codex 已审;`npm test` 43 pass)。新增 `test/helpers/fake-backend.mjs`(makeFakeOmpProc + FakeSession + fakeOpenBackend + 契约注释)、`test/helpers/fake-backend.test.mjs`。
-> - **地基 2 ⏸ 暂停**(改 `src/cli.mjs`,且 T2.1 刻画测试依赖真 agent)。**等 agent-bridge daemon 稳定(0.6.0 升级完成)后再开工**。任务 #4–#7 处于 pending。
+> - **地基 2 ✅ 全部完成**(T2.1–T2.4;codex 全审过;主树 `npm test` 68 pass + `acceptance` 38 pass)。新增 `src/session-manager.mjs`(open/enqueue/use/list/drainAll/closeAll + 事件接线,可注入 openBackend/stdout/stderr/onIdle)、`test/session-manager.test.mjs`(注入 fakeOpenBackend 单测事件接线);`src/cli.mjs` 入口改为可注入 `main({openBackend,stdin,stdout,stderr,argv})` 并调用 session-manager;`scripts/acceptance.mjs` 增 A6/A7 刻画。**(2026-06-07 完成;未提交,在 `flow-engine-foundations` 工作树)**
+> - **flow 引擎(并行第二条线,worktree `synod-flow` / 分支 `flow-engine-core`)**:F0(运行时骨架 ctx+logger+DI)✅、F1(`agent()` 原语,reuse/日志/泄漏安全)✅,均 codex 多轮审过,worktree `npm test` 118 pass。下一步 F2(loader+bash)。详见 `WORKFLOW_ENGINE_TDD.md`。

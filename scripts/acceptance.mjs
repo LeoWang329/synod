@@ -452,6 +452,241 @@ async function test_A5(ompOk) {
   await assertNoNewResidue(before, "A5");
 }
 
+async function test_A6_routing(ompOk, codexOk) {
+  console.log("\n── A6  interactive routing (@label, @all, /use) ──");
+  if (!ompOk || !codexOk) {
+    skip("A6", `need omp + codex (omp=${ompOk} codex=${codexOk})`);
+    return;
+  }
+
+  const before = getAgentPids();
+
+  let result;
+  try {
+    result = await runCli(["--agent", "omp"], {
+      inputLines: [
+        // /open codex → prompt redraws (current stays codex#1 after open)
+        { text: "/open --agent codex", waitForPrompt: true },
+        // @omp#1 directed: current=codex#1, omp#1 idle won't redraw → use delay
+        { text: "@omp#1 reply with exactly one sentence including the word ALPHA", delay: 3000 },
+        // @all broadcast: both get turns; codex#1 idle may redraw but timing-dependent → use delay
+        { text: "@all reply with exactly one sentence including the word BETA", delay: 3000 },
+        // /use omp#1 → prompt redraws
+        { text: "/use omp#1", waitForPrompt: true },
+        // Bare message to current (omp#1) → prompt redraws on idle
+        { text: "reply with exactly one sentence including the word GAMMA", waitForPrompt: true },
+        // /use codex#1 (non-default session) → tests that bare line routes to switched session
+        { text: "/use codex#1", waitForPrompt: true },
+        // Bare message to current (codex#1) → must NOT leak to omp#1
+        { text: "reply with exactly one sentence including the word DELTA", waitForPrompt: true },
+        // Exit triggers drain → all queued turns complete before flush+close
+        { text: "/exit" },
+      ],
+      timeoutMs: 180_000,
+    });
+  } catch (err) {
+    fail("A6", `CLI error: ${err.message}`);
+    return;
+  }
+
+  const out = result.stdout;
+
+  // Filter lines by label prefix (anchored to start to avoid matching [label] in agent body text)
+  const omp1Lines = out.split("\n").filter((l) => l.startsWith("[omp#1]") || l.startsWith("> [omp#1]"));
+  const codex1Lines = out.split("\n").filter((l) => l.startsWith("[codex#1]") || l.startsWith("> [codex#1]"));
+
+  // (a) Directed isolation: ALPHA in [omp#1], NOT in [codex#1]
+  const ompHasAlpha = omp1Lines.some((l) => /ALPHA/i.test(l));
+  const codexHasAlpha = codex1Lines.some((l) => /ALPHA/i.test(l));
+  if (ompHasAlpha) pass("A6 ALPHA in [omp#1] (directed)");
+  else fail("A6 ALPHA directed", "ALPHA not found in omp#1 streaming lines");
+  if (!codexHasAlpha) pass("A6 ALPHA isolation (no leak to codex#1)");
+  else fail("A6 ALPHA isolation", "ALPHA leaked into codex#1 streaming lines");
+
+  // (b) Broadcast: BETA in both [omp#1] and [codex#1]
+  const ompHasBeta = omp1Lines.some((l) => /BETA/i.test(l));
+  const codexHasBeta = codex1Lines.some((l) => /BETA/i.test(l));
+  if (ompHasBeta) pass("A6 BETA in [omp#1] (@all)");
+  else fail("A6 BETA omp", "BETA not found in omp#1 streaming lines");
+  if (codexHasBeta) pass("A6 BETA in [codex#1] (@all)");
+  else fail("A6 BETA codex", "BETA not found in codex#1 streaming lines");
+
+  // (c) /use switch confirmation (omp#1)
+  if (out.includes("Switched to omp#1")) pass("A6 /use switched to omp#1");
+  else fail("A6 /use omp#1", "missing 'Switched to omp#1' in stdout");
+
+  // (d) Bare message after /use omp#1 → GAMMA in [omp#1]
+  const ompHasGamma = omp1Lines.some((l) => /GAMMA/i.test(l));
+  if (ompHasGamma) pass("A6 GAMMA in [omp#1] (bare after /use omp#1)");
+  else fail("A6 GAMMA bare", "GAMMA not found in omp#1 streaming lines");
+
+  // (e) /use codex#1 switch confirmation
+  if (out.includes("Switched to codex#1")) pass("A6 /use switched to codex#1");
+  else fail("A6 /use codex#1", "missing 'Switched to codex#1' in stdout");
+
+  // (f) Bare message after /use codex#1 → DELTA in [codex#1], NOT in [omp#1]
+  const codexHasDelta = codex1Lines.some((l) => /DELTA/i.test(l));
+  const ompHasDelta = omp1Lines.some((l) => /DELTA/i.test(l));
+  if (codexHasDelta) pass("A6 DELTA in [codex#1] (bare after /use codex#1)");
+  else fail("A6 DELTA codex", "DELTA not found in codex#1 streaming lines");
+  if (!ompHasDelta) pass("A6 DELTA isolation (no leak to omp#1)");
+  else fail("A6 DELTA isolation", "DELTA leaked into omp#1 streaming lines");
+
+  // (g) Exit 0, no residue
+  if (result.code === 0) pass("A6 exit 0");
+  else fail("A6 exit", `code ${result.code}`);
+
+  await assertNoNewResidue(before, "A6");
+}
+
+async function test_A7_ctrld(ompOk) {
+  console.log("\n── A7  Ctrl-D / EOF clean exit ──");
+  if (!ompOk) {
+    skip("A7", "omp not available");
+    return;
+  }
+
+  const before = getAgentPids();
+
+  return new Promise((resolve) => {
+    const child = spawn(NODE, [CLI, "--agent", "omp"], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: process.env,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+
+    const closeTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      fail("A7", "timeout");
+      resolve();
+    }, 60_000);
+
+    child.on("close", async (code, signal) => {
+      clearTimeout(closeTimer);
+      if (settled) return;
+      settled = true;
+
+      // Confirm streaming output was produced before EOF
+      if (/\[omp#\d+\]/.test(stdout)) {
+        pass("A7 streaming before EOF");
+      } else {
+        fail("A7 streaming before EOF", "no label-prefixed output");
+      }
+
+      // Confirm the turn actually completed (drain after EOF): marker word BYE present
+      if (stdout.includes("BYE")) {
+        pass("A7 BYE marker (drain completed)");
+      } else {
+        fail("A7 BYE marker", "BYE not found in stdout — drain may not have completed");
+      }
+
+      // Clean exit: code 0, no signal
+      if (code === 0 && signal === null) {
+        pass("A7 clean exit (code 0, no signal)");
+      } else {
+        fail("A7 exit", `code=${code} signal=${signal}, expected code=0 signal=null`);
+      }
+
+      await assertNoNewResidue(before, "A7");
+      resolve();
+    });
+
+    (async () => {
+      try {
+        // Wait for initial prompt
+        let waited = 0;
+        while (waited < 15_000 && !stdout.includes("> ")) {
+          await sleep(200);
+          waited += 200;
+        }
+        if (!stdout.includes("> ")) {
+          fail("A7", "prompt never appeared");
+          child.kill("SIGKILL");
+          resolve();
+          return;
+        }
+
+        // Send a normal message
+        child.stdin.write("reply with exactly: BYE\n");
+
+        // Wait for streaming to start (first [omp#N] line)
+        waited = 0;
+        while (waited < 30_000 && !/\[omp#\d+\]/.test(stdout)) {
+          await sleep(200);
+          waited += 200;
+        }
+        if (!/\[omp#\d+\]/.test(stdout)) {
+          fail("A7", "streaming never started");
+          child.kill("SIGKILL");
+          resolve();
+          return;
+        }
+
+        // Send EOF — onClose drain ensures turn completes before exit
+        child.stdin.end();
+      } catch {
+        child.kill("SIGKILL");
+      }
+    })();
+  });
+}
+
+async function test_A8_relay(ompOk, codexOk) {
+  console.log("\n── A8  relay forwarding (omp#1 → codex#1) ──");
+  if (!ompOk || !codexOk) {
+    skip("A8", `need omp + codex (omp=${ompOk} codex=${codexOk})`);
+    return;
+  }
+
+  const before = getAgentPids();
+
+  let result;
+  try {
+    result = await runCli(["--agent", "omp"], {
+      inputLines: [
+        // Open codex session (current becomes codex#1)
+        { text: "/open --agent codex", waitForPrompt: true },
+        // Create relay omp#1 -> codex#1 and send task, then immediate /exit
+        // — drainAll must wait for omp#1's turn AND the cascade to codex#1.
+        { text: "/relay omp#1->codex#1", waitForPrompt: true },
+        { text: "@omp#1 reply with exactly one sentence including the word LANTERN", delay: 3000 },
+        { text: "/exit" },
+      ],
+      timeoutMs: 180_000,
+    });
+  } catch (err) {
+    fail("A8", `CLI error: ${err.message}`);
+    return;
+  }
+
+  const out = result.stdout;
+
+  // omp#1 should have produced output (its own turn)
+  const omp1Lines = out.split("\n").filter((l) => l.startsWith("[omp#1]") || l.startsWith("> [omp#1]"));
+  const ompHasLantern = omp1Lines.some((l) => /LANTERN/i.test(l));
+  if (ompHasLantern) pass("A8 LANTERN in [omp#1] (own turn)");
+  else fail("A8 omp#1 LANTERN", "LANTERN not found in omp#1 output");
+
+  // codex#1 was never directly messaged — any output proves relay delivery
+  const codex1Lines = out.split("\n").filter((l) => l.startsWith("[codex#1]") || l.startsWith("> [codex#1]"));
+  const codexHasOutput = codex1Lines.length > 0;
+  if (codexHasOutput) pass("A8 [codex#1] output present (relay delivered)");
+  else fail("A8 relay delivery", "no [codex#1] output — relay may not have forwarded");
+
+  // Exit clean
+  if (result.code === 0) pass("A8 exit 0");
+  else fail("A8 exit", `code ${result.code}`);
+
+  await assertNoNewResidue(before, "A8");
+}
 // ── main ───────────────────────────────────────────────────────────────
 
 async function main() {
@@ -475,6 +710,9 @@ async function main() {
   await test_A4_omp_bin();
   await test_A4_sigint(ompOk);
   await test_A5(ompOk);
+  await test_A6_routing(ompOk, codexOk);
+  await test_A7_ctrld(ompOk);
+  await test_A8_relay(ompOk, codexOk);
 
   // ── summary ──
   console.log(`\n═══════════════════════════════════`);
