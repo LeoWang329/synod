@@ -1,13 +1,13 @@
 # 交接手册(Synod)
 
 > 给"清空上下文后的我 / 另一个接手 agent"。读完这份就能接着干,不用重建上下文。
-> 写于 2026-06-07,**最后更新 2026-06-07(地基1/2 + relay A1–A3 + flow F0–F2 全部落地并提交)**。**先读本文,再读下面「文档地图」里的具体文档。**
+> 写于 2026-06-07,**最后更新 2026-06-07(🎉 本期规划全部 9 个增量完工:编排 B1–B4 + flow F3–F7 全部落地并提交 + 真 agent e2e 通过)**。**先读本文,再读下面「文档地图」里的具体文档。**
 
 ## TL;DR(一句话现状)
 
 Synod 在落地**用原生 JS 编排固定工作流的引擎** + 两条 **agent 自主编排**能力,用 **deepseek 开发 / codex 审核+测试 / Claude Code 规划验收** 的三方协作建。**已完成并提交**(都过 codex 多轮审 + 独立跑测试 + 我亲跑测试验收):**地基1**(flow 测试替身)、**地基2/R0**(cli 可注入 + 抽 session-manager)、**编排 relay**(A1+A2 核心 + A3 接 cli + 真 agent e2e)、**flow 引擎 F0–F2**(ctx+logger+DI、`agent()`/`bash()` 原语、loader+词法 import lint+runner)。
 **两条分支,均已本地提交、未推送**:Track1(地基2+relay)在 `flow-engine-foundations`(主树 `/Users/leo/projects/synod`,`npm test` 104 + `acceptance` 42 = A1–A8);Track2(flow F0–F2)在 `flow-engine-core`(worktree `/Users/leo/projects/synod-flow`,`npm test` 146)。
-**下一步**:编排 **B 支(标记驱动 B1–B4)** + flow **F3–F7**(见末尾「下一步待办」)。daemon 已是 0.6.0 且稳定。
+**现状:本期规划范围全部达成。** 编排 **B1–B4** 全完(主树 `flow-engine-foundations`,`eabf7fb`→`4b6d216`;`npm test` 233 + `acceptance` 46),flow **F3–F7** 全完(worktree `flow-engine-core`,`9e730a8`→`f877f1b`;`npm test` 250 + `acceptance-flow` 5)。两棵树工作区干净、均已本地提交、**未推送 GitHub**。留门不做:持久化/恢复、两条 agent 自主编排 TODO。daemon 已是 0.7.0。
 
 ## Synod 是什么(够用版)
 
@@ -112,7 +112,9 @@ Synod 在落地**用原生 JS 编排固定工作流的引擎** + 两条 **agent 
 
 ## 下一步待办(接手从这里开始)
 
-**剩余 9 个增量**:编排 B 支 4 个(B1–B4)+ flow 5 个(F3–F7),做完即达本期规划完整范围(留门不做:持久化/恢复)。仍按 deepseek 开发 / codex 审+测 / Claude Code 验收的闭环跑;**每个增量是一轮闭环,复杂的会反复 5–6 轮(F1/F2 都是),简单的 1–2 轮**。谁能并发见本节末「并行性」。
+> ✅ **本节描述的 9 个增量已全部完成并提交**(B1–B4 + F3–F7,见上「TL;DR」的 commit 与绿态)。下面保留原计划作为**已交付内容的记录**;真正的"下一步"只剩**可选项**:(a) 把两条分支推送/合并到 GitHub `LeoWang329/synod`;(b) 启动留门的两条 TODO(持久化/恢复、agent 自主编排)。三方协作闭环工法见本文上方「角色分工」与 [[agent-bridge-delegation-gotchas]]。
+
+**(已交付)剩余 9 个增量**:编排 B 支 4 个(B1–B4)+ flow 5 个(F3–F7),做完即达本期规划完整范围(留门不做:持久化/恢复)。仍按 deepseek 开发 / codex 审+测 / Claude Code 验收的闭环跑;**每个增量是一轮闭环,复杂的会反复 5–6 轮(F1/F2 都是),简单的 1–2 轮**。谁能并发见本节末「并行性」。
 
 **Track 1 · 编排 B 支(标记驱动)** — 在 `flow-engine-foundations`(主树),依据 `docs/AGENT_ORCHESTRATION_TDD.md` 的 B1–B4:
 - **B1** `src/control-marker.mjs`(纯解析器,**测试最重**):识别 agent 输出里的严格唯一标记 → 命令数组。**核心难点:抗误触发**——agent 被告知语法后会在解释/引用时原样输出标记(代码块示例、"怎么用这个标记"的散文),必须**不**误当指令;在**完整 turn 文本**上解析(非裸 delta);去重;损坏 JSON 跳过+warning 不抛。可能需 nonce/握手。
