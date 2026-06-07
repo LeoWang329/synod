@@ -3,6 +3,9 @@ import { createCtx } from "./ctx.mjs";
 import { createApprove } from "./api/approve.mjs";
 import { createLogger } from "./logger.mjs";
 import { createAgent } from "./api/agent.mjs";
+import { createAgentLoop } from "./api/agentLoop.mjs";
+import { backtrack } from "./api/backtrack.mjs";
+import { createDeferScope } from "./defer.mjs";
 import { createBash } from "./api/bash.mjs";
 import { openBackend as realOpenBackend } from "../backend.mjs";
 
@@ -129,6 +132,12 @@ export function createRuntime({ fs, clock, openBackend, io } = {}) {
 
   const bash = createBash({ logger });
 
+  const agentLoop = createAgentLoop({
+    openBackend: resolvedOpenBackend,
+    logger,
+  });
+
+
   /**
    * disposeRun(ctx) — close all reused sessions and clean up run-state.
    *
@@ -165,6 +174,12 @@ export function createRuntime({ fs, clock, openBackend, io } = {}) {
     agent,
     /** bash() primitive — run a shell command. */
     bash,
+    /** agentLoop() primitive — multi-turn agent iteration, reuses session. */
+    agentLoop,
+    /** backtrack() helper — cross-node retry with feedback. */
+    backtrack,
+    /** defer() factory — create a LIFO defer scope. */
+    defer: createDeferScope,
     /** approve() primitive — present content, wait for human decision. */
     approve: createApprove({ io: resolvedIo, logger }),
     /** disposeRun(ctx) — close reused sessions for a run. */

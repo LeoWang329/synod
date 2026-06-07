@@ -18,3 +18,20 @@ export function bash(ctx, cmd, opts) {
 export function approve(ctx, opts) {
   return getCurrentRuntime().approve(ctx, opts);
 }
+
+export function agentLoop(ctx, opts) {
+  return getCurrentRuntime().agentLoop(ctx, opts);
+}
+
+export function backtrack(ctx, opts) {
+  return getCurrentRuntime().backtrack(ctx, opts);
+}
+
+/**
+ * defer — create a LIFO defer scope.
+ *
+ * Returns `{ defer(fn), run(fn), dispose() }` — no ctx needed.
+ */
+export function defer() {
+  return getCurrentRuntime().defer();
+}

@@ -261,6 +261,7 @@ export class FakeSession extends EventEmitter {
 
     // Fake-specific config
     this._deltas = opts.deltas || [];
+    this._texts = opts.texts || null;
     this._failPrompt = Boolean(opts.failPrompt);
 
     // Tracking for test assertions
@@ -290,13 +291,26 @@ export class FakeSession extends EventEmitter {
     // agent_start clears lastAssistantText)
     this.lastAssistantText = "";
 
-    for (const delta of this._deltas) {
-      this.lastAssistantText += delta;
-      this.emit("delta", delta);
-      this.#emitEvent({
-        type: "message_update",
-        message: { type: "text_delta", delta },
-      });
+    if (this._texts && this._texts.length > 0) {
+      // Per-turn text responses: consume next entry, clamp to last if exhausted
+      const idx = Math.min(this.turnCount, this._texts.length - 1);
+      this.lastAssistantText = this._texts[idx];
+      if (this.lastAssistantText) {
+        this.emit("delta", this.lastAssistantText);
+        this.#emitEvent({
+          type: "message_update",
+          message: { type: "text_delta", delta: this.lastAssistantText },
+        });
+      }
+    } else {
+      for (const delta of this._deltas) {
+        this.lastAssistantText += delta;
+        this.emit("delta", delta);
+        this.#emitEvent({
+          type: "message_update",
+          message: { type: "text_delta", delta },
+        });
+      }
     }
 
     this.turnCount++;
