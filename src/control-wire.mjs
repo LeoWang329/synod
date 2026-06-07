@@ -13,8 +13,15 @@
 //
 // ## Nonce handshake boundary
 //
-// Each control channel holds a nonce generated via crypto.randomUUID().
+// Each control channel holds a nonce (default: crypto.randomUUID(),
+// overridable via `wireControl({ nonce })` or `SYNOD_CONTROL_NONCE` env var).
 // Only control fences tagged with `synod <this-nonce>` are recognized.
+//
+// **Env nonce = shared handshake secret**: when the CLI is spawned with
+// `SYNOD_CONTROL_NONCE`, backend subprocesses inherit the env and thus the
+// nonce.  This is by design — the agent *must* know the nonce to emit a valid
+// control fence.  It is NOT a leak; it is the channel-establishment handshake.
+// Per-session nonce rotation (fresh nonce per agent spawn) is future work.
 //
 // How the agent learns the nonce is the *handshake* — this module does NOT
 // inject the nonce into agent context.  That responsibility belongs to the
@@ -84,7 +91,7 @@ export function createControlChannel({ dispatch, nonce, onWarnings }) {
     // are swallowed via .catch so they never become unhandledRejections.
     let p;
     try {
-      p = dispatch(commands);
+      p = dispatch(commands, { label: _label });
     } catch (_syncErr) {
       // dispatch threw synchronously — swallow, do not propagate.
       return;
@@ -133,6 +140,8 @@ export function wireControl({ sm, registry, stderr, guardrails, nonce }) {
     ...guardrails,
   };
 
+  const _depthMap = new Map(); // label → depth (0 = root, increments per control dispatch)
+
   const controlDispatch = createControlDispatch({
     manager: sm,
     guardrails: g,
@@ -143,8 +152,22 @@ export function wireControl({ sm, registry, stderr, guardrails, nonce }) {
     },
   });
 
+  // Wrap dispatch with depth tracking: look up the initiating session's
+  // current depth, pass it as a per-call override to the dispatcher, then
+  // record child sessions at depth+1 so grandchildren are depth-clamped.
+  async function depthDispatch(commands, { label } = {}) {
+    const d = label ? (_depthMap.get(label) ?? 0) : 0;
+    const result = await controlDispatch(commands, { depth: d });
+    for (const item of result.dispatched) {
+      if (item.label) {
+        _depthMap.set(item.label, d + 1);
+      }
+    }
+    return result;
+  }
+
   const control = createControlChannel({
-    dispatch: controlDispatch,
+    dispatch: depthDispatch,
     nonce,
     onWarnings: (_label, warnings) => {
       for (const w of warnings) {

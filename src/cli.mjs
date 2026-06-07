@@ -290,6 +290,7 @@ async function main({
   stdout = process.stdout,
   stderr = process.stderr,
   argv = process.argv,
+  nonce = process.env.SYNOD_CONTROL_NONCE || undefined,
 } = {}) {
   const args = parseArgs(argv.slice(2));
   if (args._help) {
@@ -340,9 +341,8 @@ async function main({
   });
   _smForRelay = sm;
 
-  // Wire control (needs sm + registry; returns composed relay+control callback)
   const { onTurnComplete: composedOnTurnComplete } = wireControl({
-    sm, registry, stderr,
+    sm, registry, stderr, nonce,
   });
   _composedOnTurnComplete = composedOnTurnComplete;
 

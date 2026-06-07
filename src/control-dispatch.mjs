@@ -51,16 +51,22 @@ export function createControlDispatch({ manager, guardrails = {}, log = () => {}
 
   /**
    * Dispatch an array of parsed control commands.
-   * Each command is checked against guardrails, then routed to manager.open
-   * or manager.enqueue.  Rejections are logged but never thrown — the loop
-   * always continues to the next command.
+   *
+   * @param {object[]} commands
+   * @param {object} [opts]
+   * @param {number} [opts.depth] — per-call depth override (for nested dispatch).
+   *   If omitted, the constructor's static `depth` is used (default 0).
+   *   The per-call value enables the wiring layer to pass the initiating
+   *   session's current nesting depth so that maxDepth can clamp recursively.
+   * @returns {Promise<{ dispatched: object[], rejected: object[] }>}
    */
-  async function dispatch(commands) {
+  async function dispatch(commands, { depth: callDepth } = {}) {
+    const effectiveDepth = callDepth !== undefined ? callDepth : depth;
     const dispatched = [];
     const rejected = [];
 
     for (const cmd of commands) {
-      const rejection = _guard(cmd);
+      const rejection = _guard(cmd, effectiveDepth);
       if (rejection) {
         rejected.push({ command: cmd, reason: rejection });
         log({ level: "warn", reason: rejection, command: cmd });
@@ -76,13 +82,7 @@ export function createControlDispatch({ manager, guardrails = {}, log = () => {}
         });
 
         if (label) {
-          // Fire-and-forget: enqueue the task without awaiting the turn.
-          // Subsequent commands are not blocked on turn completion.
-          // Rejections are logged but never propagated (they must not crash dispatch).
           const enq = manager.enqueue({ target: label, msg: cmd.task });
-          // Fire-and-forget: don't await the turn.  The target was just
-          // opened, so enq is a Promise (not false).  Guard .catch in
-          // case a fake manager returns a non-thenable.
           if (enq !== false && typeof enq?.catch === "function") {
             enq.catch((err) => {
               log({
@@ -108,8 +108,6 @@ export function createControlDispatch({ manager, guardrails = {}, log = () => {}
           dispatched.push({ command: cmd });
         }
       } else {
-        // Defense in depth — control-marker should filter these out, but
-        // handle gracefully if an unknown cmd slips through.
         const reason = `unknown command: ${cmd.cmd}`;
         rejected.push({ command: cmd, reason });
         log({ level: "error", reason, command: cmd });
@@ -121,15 +119,15 @@ export function createControlDispatch({ manager, guardrails = {}, log = () => {}
 
   // ── Guardrail checks (returns reason string or null) ──────────────
 
-  function _guard(cmd) {
+  function _guard(cmd, effectiveDepth) {
     if (cmd.cmd !== "open") return null;
 
     if (manager._sessions.size >= maxSessions) {
       return `max sessions (${maxSessions}) reached`;
     }
 
-    if (depth >= maxDepth) {
-      return `max depth (${maxDepth}) reached (current: ${depth})`;
+    if (effectiveDepth >= maxDepth) {
+      return `max depth (${maxDepth}) reached (current: ${effectiveDepth})`;
     }
 
     if (allowedAgents && !allowedAgents.includes(cmd.agent)) {

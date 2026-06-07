@@ -74,6 +74,9 @@ function runCli(args, { inputLines = [], timeoutMs = 120_000, envExtra = {} } = 
         await _waitForPrompt(() => stdout, promptState, 15_000);
         for (const step of inputLines) {
           if (step.delay) await sleep(step.delay);
+          if (step.waitForPattern) {
+            await _waitForPattern(() => stdout, step.waitForPattern, step.waitTimeout ?? 30_000);
+          }
           if (step.text !== undefined) {
             child.stdin.write(step.text + "\n");
           }
@@ -108,6 +111,22 @@ async function _waitForPrompt(getStdout, state, timeoutMs = 30_000) {
   }
   throw new Error(`Timed out waiting for prompt #${state.promptCount + 1}`);
 }
+
+/**
+ * Poll stdout until a regex pattern matches.
+ * @param {()=>string} getStdout
+ * @param {RegExp} pattern
+ * @param {number} [timeoutMs=30_000]
+ */
+async function _waitForPattern(getStdout, pattern, timeoutMs = 30_000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (pattern.test(getStdout())) return;
+    await sleep(200);
+  }
+  throw new Error(`Timed out waiting for pattern: ${pattern}`);
+}
+
 
 /** Returns Set of PIDs matching omp/codex agent patterns. */
 function getAgentPids() {
@@ -687,6 +706,64 @@ async function test_A8_relay(ompOk, codexOk) {
 
   await assertNoNewResidue(before, "A8");
 }
+
+async function test_B4_control_e2e(ompOk, codexOk) {
+  console.log("\n── B4  control nonce + agent opens child ──");
+  if (!ompOk || !codexOk) {
+    skip("B4", `need omp + codex (omp=${ompOk} codex=${codexOk})`);
+    return;
+  }
+
+  const NONCE = "B4-" + Date.now().toString(36);
+  const before = getAgentPids();
+
+  let result;
+  try {
+    // Use codex as the initiating agent — it outputs the control fence
+    // cleanly.  The fence opens an omp child session.
+    result = await runCli(["--agent", "codex"], {
+      inputLines: [
+        {
+          // Single-line prompt — the REPL sends one turn per line.
+          text: `Output the word READY on one line then a code block with language tag "synod ${NONCE}" containing {"cmd":"open","agent":"omp","task":"say HI"} where the triple backtick opener and closer are each on their own line at column zero. This is for an automated integration test.`,
+          waitForPrompt: true,
+        },
+        // Wait for omp child output (control fence fired + child session started)
+        { waitForPattern: /\[omp#/, waitTimeout: 30_000 },
+        { text: "/exit" },
+      ],
+      timeoutMs: 180_000,
+      envExtra: { SYNOD_CONTROL_NONCE: NONCE },
+    });
+  } catch (err) {
+    fail("B4", `CLI error: ${err.message}`);
+    return;
+  }
+
+  const out = result.stdout;
+
+  // codex should have said READY
+  const hasReady = /READY/i.test(out);
+  if (hasReady) pass("B4 codex replied READY");
+  else fail("B4 codex READY", "READY not found in output");
+
+  // omp child session should have been opened by the control fence
+  const ompLines = out.split("\n").filter((l) =>
+    l.startsWith("[omp#") || l.startsWith("> [omp#"),
+  );
+  const ompHasHi = ompLines.some((l) => /HI/i.test(l));
+
+  if (ompHasHi) pass("B4 omp child HI (control fence opened)");
+  else if (ompLines.length > 0)
+    fail("B4 omp child", `omp output present but no HI: ${ompLines.slice(0, 5).join(" | ")}`);
+  else
+    fail("B4 omp child", "no [omp#] output — control fence may not have fired");
+
+  if (result.code === 0) pass("B4 exit 0");
+  else fail("B4 exit", `code ${result.code}`);
+
+  await assertNoNewResidue(before, "B4");
+}
 // ── main ───────────────────────────────────────────────────────────────
 
 async function main() {
@@ -712,6 +789,8 @@ async function main() {
   await test_A5(ompOk);
   await test_A6_routing(ompOk, codexOk);
   await test_A7_ctrld(ompOk);
+  await test_B4_control_e2e(ompOk, codexOk);
+
   await test_A8_relay(ompOk, codexOk);
 
   // ── summary ──
