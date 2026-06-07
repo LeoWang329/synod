@@ -27,6 +27,10 @@ export function backtrack(ctx, opts) {
   return getCurrentRuntime().backtrack(ctx, opts);
 }
 
+export function reviseWithHuman(ctx, draft, opts) {
+  return getCurrentRuntime().reviseWithHuman(ctx, draft, opts);
+}
+
 /**
  * defer — create a LIFO defer scope.
  *

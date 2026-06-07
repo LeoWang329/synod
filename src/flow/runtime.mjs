@@ -7,6 +7,7 @@ import { createAgentLoop } from "./api/agentLoop.mjs";
 import { backtrack } from "./api/backtrack.mjs";
 import { createDeferScope } from "./defer.mjs";
 import { createBash } from "./api/bash.mjs";
+import { createReviseWithHuman } from "./api/reviseWithHuman.mjs";
 import { openBackend as realOpenBackend } from "../backend.mjs";
 
 /**
@@ -137,9 +138,17 @@ export function createRuntime({ fs, clock, openBackend, io } = {}) {
     logger,
   });
 
+  const approve = createApprove({ io: resolvedIo, logger });
+
+  const reviseWithHuman = createReviseWithHuman({
+    agent,
+    approve,
+    logger,
+  });
 
   /**
    * disposeRun(ctx) — close all reused sessions and clean up run-state.
+   *
    *
    * Must be called when a run completes.  Idempotent (safe to call
    * multiple times for the same run).
@@ -181,7 +190,9 @@ export function createRuntime({ fs, clock, openBackend, io } = {}) {
     /** defer() factory — create a LIFO defer scope. */
     defer: createDeferScope,
     /** approve() primitive — present content, wait for human decision. */
-    approve: createApprove({ io: resolvedIo, logger }),
+    approve,
+    /** reviseWithHuman() primitive — human-in-the-loop revision loop. */
+    reviseWithHuman,
     /** disposeRun(ctx) — close reused sessions for a run. */
     disposeRun,
     /** Logger instance bound to the injected sinks. */
