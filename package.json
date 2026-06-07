@@ -12,6 +12,9 @@
     "test": "node --test",
     "test:e2e": "node scripts/acceptance.mjs"
   },
+  "exports": {
+    "./flow": "./src/flow/index.mjs"
+  },
   "engines": {
     "node": ">=20"
   }
