@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { doctor, openBackend as realOpenBackend } from "./backend.mjs";
 import { createSessionManager, createLineBuffer, checkAgentAvailable, AGENTS } from "./session-manager.mjs";
 import { parseRelay, createRelayRegistry } from "./relay.mjs";
+import { wireControl } from "./control-wire.mjs";
 
 // ── CLI parsing ──────────────────────────────────────────────────────
 function parseArgs(argv) {
@@ -317,12 +318,14 @@ async function main({
 
   // Create repl reference first so onIdle callback can reference repl.writePrompt
   let repl;
-
   // ── Relay registry (two-phase: created before sm, enqueue wired after) ──
   let _smForRelay = null;
   const registry = createRelayRegistry((to, msg) => {
     if (_smForRelay) _smForRelay.enqueue({ target: to, msg });
   });
+
+  // ── Control channel (two-phase: composed onTurnComplete set after sm exists) ──
+  let _composedOnTurnComplete = null;
 
   const sm = createSessionManager({
     openBackend, stdout, stderr, report, cwd,
@@ -331,13 +334,20 @@ async function main({
       if (repl && label === sm.currentLabel) repl.writePrompt();
     },
     errorLeadingNewline: true,
-    onTurnComplete: (label, result) => registry.onTurnComplete(label, result.text),
+    onTurnComplete: (label, result) => {
+      if (_composedOnTurnComplete) _composedOnTurnComplete(label, result);
+    },
   });
   _smForRelay = sm;
 
+  // Wire control (needs sm + registry; returns composed relay+control callback)
+  const { onTurnComplete: composedOnTurnComplete } = wireControl({
+    sm, registry, stderr,
+  });
+  _composedOnTurnComplete = composedOnTurnComplete;
+
   // Wire module-level SIGINT handler to these sessions
   gSessions = sm._sessions;
-
   // ── REPL dispatch ──────────────────────────────────────────────────
   repl = createRepl({
     prompt: "> ",
