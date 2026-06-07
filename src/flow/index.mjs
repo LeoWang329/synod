@@ -31,6 +31,10 @@ export function reviseWithHuman(ctx, draft, opts) {
   return getCurrentRuntime().reviseWithHuman(ctx, draft, opts);
 }
 
+export function runWorkflow(ctx, childRef, input) {
+  return getCurrentRuntime().runWorkflow(ctx, childRef, input);
+}
+
 /**
  * defer — create a LIFO defer scope.
  *

@@ -70,7 +70,7 @@ function validatePureData(value, path = "input", visited = new WeakSet()) {
  * Input is recursively validated and deep-cloned so caller mutations
  * cannot corrupt the ctx.
  */
-export function createCtx({ runId, cwd, input } = {}) {
+export function createCtx({ runId, cwd, input, parentRunId, depth } = {}) {
   if (runId !== undefined && typeof runId !== "string") {
     throw new Error(
       `createCtx: runId must be a string, got ${typeof runId}`,
@@ -81,6 +81,18 @@ export function createCtx({ runId, cwd, input } = {}) {
       `createCtx: cwd must be a string, got ${typeof cwd}`,
     );
   }
+  if (parentRunId !== undefined && typeof parentRunId !== "string") {
+    throw new Error(
+      `createCtx: parentRunId must be a string, got ${typeof parentRunId}`,
+    );
+  }
+  if (depth !== undefined) {
+    if (typeof depth !== "number" || !Number.isInteger(depth) || depth < 0) {
+      throw new Error(
+        `createCtx: depth must be a non-negative integer, got ${depth}`,
+      );
+    }
+  }
 
   const safeInput = input ?? {};
   validatePureData(safeInput);
@@ -88,7 +100,7 @@ export function createCtx({ runId, cwd, input } = {}) {
   // Deep-clone via JSON round-trip (validation already proved it's safe)
   const clonedInput = JSON.parse(JSON.stringify(safeInput));
 
-  return {
+  const ctx = {
     runId: runId ?? randomUUID(),
     cwd: cwd ?? process.cwd(),
     input: clonedInput,
@@ -99,4 +111,11 @@ export function createCtx({ runId, cwd, input } = {}) {
     /** Configuration knobs. */
     config: {},
   };
+
+  // Only set parentRunId/depth when explicitly provided — keeps
+  // root-level ctx objects smaller and backward-compatible.
+  if (parentRunId !== undefined) ctx.parentRunId = parentRunId;
+  if (depth !== undefined) ctx.depth = depth;
+
+  return ctx;
 }

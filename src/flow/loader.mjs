@@ -1,6 +1,6 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, realpath } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { resolve, extname } from "node:path";
+import { resolve, extname, sep } from "node:path";
 
 /** The only module that flow files are allowed to statically import. */
 const ALLOWED_IMPORT = "synod/flow";
@@ -499,4 +499,124 @@ export async function discoverFlows(dir) {
   }
 
   return flows;
+}
+
+/**
+ * Load and validate a single flow file by reference string.
+ *
+ * `ref` is resolved relative to `workflowsRoot`:
+ *   - `"./child"`   → `workflowsRoot/child.mjs`
+ *   - `"child"`     → `workflowsRoot/child.mjs`
+ *   - `"sub/path"`  → `workflowsRoot/sub/path.mjs`
+ *
+ * The `.mjs` extension is appended automatically when absent.
+ *
+ * Validation follows the same pipeline as `discoverFlows`:
+ *  1. Read source, lint imports
+ *  2. Dynamic import
+ *  3. Validate meta.description and run export
+ *
+ * @param {string} workflowsRoot – absolute path to the workflows directory
+ * @param {string} ref           – flow reference (path relative to workflowsRoot)
+ * @returns {Promise<{name: string, meta: object, run: Function, path: string}>}
+ */
+export async function loadFlow(workflowsRoot, ref) {
+  // Resolve ref relative to workflowsRoot, strip leading ./ if present
+  const cleanRef = ref.replace(/^\.\//, "");
+
+  // Reject absolute paths — they bypass workflowsRoot containment
+  if (cleanRef.startsWith("/")) {
+    throw new Error(
+      `loadFlow: absolute paths are not allowed — ref "${ref}" must be relative to workflowsRoot`,
+    );
+  }
+
+  const withExt = cleanRef.endsWith(".mjs") ? cleanRef : `${cleanRef}.mjs`;
+  const absPath = resolve(workflowsRoot, withExt);
+
+  // Path-escape guard: resolved path must stay inside workflowsRoot
+  const normalizedRoot = workflowsRoot.endsWith(sep)
+    ? workflowsRoot
+    : workflowsRoot + sep;
+  if (absPath !== workflowsRoot && !absPath.startsWith(normalizedRoot)) {
+    throw new Error(
+      `loadFlow: path escape detected — "${ref}" resolves outside workflowsRoot (${absPath})`,
+    );
+  }
+
+  // ── Realpath guard: reject symlinks that escape workflowsRoot ──
+  // String containment (above) catches ../ and absolute paths fast.
+  // realpath catches symlinks: a link inside root that points outside
+  // would pass the string check but its canonical path is outside.
+  let realRoot;
+  try {
+    realRoot = await realpath(workflowsRoot);
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      throw new Error(
+        `loadFlow: workflowsRoot does not exist: ${workflowsRoot}`,
+      );
+    }
+    throw err;
+  }
+
+  let realTarget;
+  try {
+    realTarget = await realpath(absPath);
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+    // File doesn't exist — not a path escape.  readFile below will
+    // surface a proper "not found" error.
+  }
+
+  if (realTarget !== undefined) {
+    const realNormRoot = realRoot.endsWith(sep) ? realRoot : realRoot + sep;
+    if (realTarget !== realRoot && !realTarget.startsWith(realNormRoot)) {
+      throw new Error(
+        `loadFlow: path escape detected — "${ref}" resolves to ${realTarget} which is outside workflowsRoot (${realRoot})`,
+      );
+    }
+  }
+
+  // Derive name from filename (last path segment without .mjs)
+  const segments = withExt.split("/");
+  const filename = segments[segments.length - 1];
+  const name = filename.slice(0, -4);
+
+  // ── 1. Read source + lint BEFORE any module execution ──────────
+  const url = pathToFileURL(absPath).href;
+  const source = await readFile(absPath, "utf-8");
+  try {
+    scanImports(source);
+  } catch (lintErr) {
+    throw new Error(`Flow "${name}": ${lintErr.message}`);
+  }
+
+  // ── 2. Lint passed — safe to import ────────────────────────────
+  let mod;
+  try {
+    mod = await import(url);
+  } catch (err) {
+    throw new Error(
+      `Flow "${name}": failed to load — ${err.message}`,
+      { cause: err },
+    );
+  }
+
+  // ── 3. Validate meta ───────────────────────────────────────────
+  if (!mod.meta || typeof mod.meta.description !== "string" ||
+    !mod.meta.description.trim()) {
+    throw new Error(
+      `Flow "${name}": must export meta.description (non-empty string)`,
+    );
+  }
+
+  // ── 4. Validate run ────────────────────────────────────────────
+  if (typeof mod.run !== "function") {
+    throw new Error(
+      `Flow "${name}": must export async function run(ctx, input)`,
+    );
+  }
+
+  return { name, meta: mod.meta, run: mod.run, path: absPath };
 }

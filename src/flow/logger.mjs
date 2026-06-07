@@ -153,7 +153,7 @@ function validateMeta(meta) {
     const ts = clock();
 
     // ── step:started ──────────────────────────────────────────────
-    await writeJSONL({
+    const startedEntry = {
       event: "step:started",
       runId: ctx.runId,
       stepId,
@@ -161,7 +161,9 @@ function validateMeta(meta) {
       type,
       attempt,
       ts,
-    });
+    };
+    if (ctx.parentRunId) startedEntry.parentRunId = ctx.parentRunId;
+    await writeJSONL(startedEntry);
 
     // ── Dispose large input / output to artifacts ─────────────────
     const inputDisposition = await disposeLargeString(
@@ -186,6 +188,7 @@ function validateMeta(meta) {
       attempt,
       ts,
     };
+    if (ctx.parentRunId) entry.parentRunId = ctx.parentRunId;
 
     if (inputDisposition.ref) {
       entry.inputRef = inputDisposition.ref;
@@ -251,7 +254,7 @@ function validateMeta(meta) {
       );
     }
 
-    await writeJSONL({
+    const entry = {
       event,
       runId: ctx.runId,
       sessionId,
@@ -259,7 +262,9 @@ function validateMeta(meta) {
       model: model ?? null,
       reused: reused ?? false,
       ts: clock(),
-    });
+    };
+    if (ctx.parentRunId) entry.parentRunId = ctx.parentRunId;
+    await writeJSONL(entry);
   }
 
   return { logStep, logSession, writeJSONL };

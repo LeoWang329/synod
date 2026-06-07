@@ -8,6 +8,7 @@ import { backtrack } from "./api/backtrack.mjs";
 import { createDeferScope } from "./defer.mjs";
 import { createBash } from "./api/bash.mjs";
 import { createReviseWithHuman } from "./api/reviseWithHuman.mjs";
+import { createRunWorkflow } from "./api/runWorkflow.mjs";
 import { openBackend as realOpenBackend } from "../backend.mjs";
 
 /**
@@ -84,25 +85,32 @@ function defaultIo() {
     question,
   };
 }
-
 /**
  * createRuntime — DI container for the flow engine.
  *
  * Accepts injectable dependencies so every subsystem (ctx, logger,
  * primitives) can be tested with fakes.
  *
- *   deps.fs          – filesystem sink  (test: memory sink)
- *   deps.clock       – time source      (test: fixed clock)
- *   deps.openBackend – backend factory  (default: real openBackend)
- *   deps.io          – stdin/stdout     (default: real process stdio
- *                       with a shared lazy readline for question())
+ *   deps.fs              – filesystem sink    (test: memory sink)
+ *   deps.clock           – time source        (test: fixed clock)
+ *   deps.openBackend     – backend factory    (default: real openBackend)
+ *   deps.io              – stdin/stdout       (default: real process stdio
+ *                           with a shared lazy readline for question())
+ *   deps.workflowsRoot   – absolute path to workflows directory (required
+ *                           for runWorkflow child-flow resolution)
+ *   deps.maxDepth        – max nesting depth for runWorkflow (default 5)
+ *   deps.maxActiveSubRuns – max concurrent child sub-runs (default 1)
  *
- * Returns { createCtx, agent, bash, approve, disposeRun, logger, fs, clock, openBackend, io }.
+ * Returns { createCtx, agent, bash, approve, runWorkflow, disposeRun,
+ *           logger, fs, clock, openBackend, io }.
  *
  * Live run-state (reused sessions) is held in a per-run Map keyed by
  * ctx.runId — never stored on the pure-data ctx itself.
  */
-export function createRuntime({ fs, clock, openBackend, io } = {}) {
+export function createRuntime({
+  fs, clock, openBackend, io,
+  workflowsRoot, maxDepth, maxActiveSubRuns,
+} = {}) {
   const resolvedIo = io ?? defaultIo();
   const logger = createLogger({ fs, clock });
   const resolvedOpenBackend = openBackend ?? realOpenBackend;
@@ -172,12 +180,19 @@ export function createRuntime({ fs, clock, openBackend, io } = {}) {
     }
   }
 
-  return {
+  // ── Build the runtime object ────────────────────────────────────
+  // runWorkflow needs the runtime object (to pass to runFlow), so we
+  // build the object first, then wire runWorkflow with a lazy getter.
+  const runtimeObj = {
     /**
-     * createCtx(input) — produce a pure-data context for a single run.
+     * createCtx(input, { cwd }) — produce a pure-data context for a single run.
+     *
+     * @param {*}      input – flow input (passed through to ctx.input)
+     * @param {object} [opts]
+     * @param {string} [opts.cwd] – working directory (default: process.cwd())
      */
-    createCtx(input) {
-      return createCtx({ input });
+    createCtx(input, { cwd } = {}) {
+      return createCtx({ input, cwd });
     },
     /** agent() primitive — call a backend, return text. */
     agent,
@@ -206,4 +221,17 @@ export function createRuntime({ fs, clock, openBackend, io } = {}) {
     /** I/O interface — resolved to defaultIo() when not injected. */
     io: resolvedIo,
   };
+
+  // Wire runWorkflow after runtimeObj exists (lazy getRuntime avoids
+  // circular dependency).
+  if (workflowsRoot) {
+    runtimeObj.runWorkflow = createRunWorkflow({
+      workflowsRoot,
+      maxDepth,
+      maxActiveSubRuns,
+      getRuntime: () => runtimeObj,
+    });
+  }
+
+  return runtimeObj;
 }
