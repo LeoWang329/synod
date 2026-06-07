@@ -55,6 +55,7 @@ import { agent, agentLoop, bash, approve, reviseWithHuman, defer, runWorkflow } 
 **DON'T**
 - ❌ **不要 import `synod/flow` 以外的任何模块**(尤其 `fs` / `child_process` / `net` / `process` 裸用)。要副作用就用 `bash`。
 - ❌ **不要裸做不可逆副作用**(写文件、`git commit`、装依赖)而不配 `defer` 清理或保证幂等——回退时会脏。
+> **已知限制:正则字面量**。正则里包含 `import … from "x"` 文本可能被静态 lint 误判为非法 import。flow 应避免此写法;若确需,此为 lint 误报,非安全边界。
 - ❌ **不要用 `process.exit()` / 监听 `SIGINT`** 控制流程。要中途退出修订用 `approve` 的 `aborted`。
 - ❌ **不要写没有上限的循环**。跨节点回退、`agentLoop` 必须有 `maxTurns` / `attempt` 上限。(人在环 `reviseWithHuman` 例外:由人终止。)
 - ❌ **不要往 `ctx` 塞 live 对象**(session、socket、emitter)。`ctx` 只放纯数据,要可序列化。
