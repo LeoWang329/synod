@@ -5,7 +5,7 @@
 
 ## TL;DR(一句话现状)
 
-Synod 在落地**用原生 JS 编排固定工作流的引擎** + 两条 **agent 自主编排**能力,用 **deepseek 开发 / codex 审核 / Claude Code 规划验收** 的三方协作建。**已完成并提交**(都过 codex 多轮审 + 亲跑测试验收):**地基1**(flow 测试替身)、**地基2/R0**(cli 可注入 + 抽 session-manager)、**编排 relay**(A1+A2 核心 + A3 接 cli + 真 agent e2e)、**flow 引擎 F0–F2**(ctx+logger+DI、`agent()`/`bash()` 原语、loader+词法 import lint+runner)。
+Synod 在落地**用原生 JS 编排固定工作流的引擎** + 两条 **agent 自主编排**能力,用 **deepseek 开发 / codex 审核+测试 / Claude Code 规划验收** 的三方协作建。**已完成并提交**(都过 codex 多轮审 + 独立跑测试 + 我亲跑测试验收):**地基1**(flow 测试替身)、**地基2/R0**(cli 可注入 + 抽 session-manager)、**编排 relay**(A1+A2 核心 + A3 接 cli + 真 agent e2e)、**flow 引擎 F0–F2**(ctx+logger+DI、`agent()`/`bash()` 原语、loader+词法 import lint+runner)。
 **两条分支,均已本地提交、未推送**:Track1(地基2+relay)在 `flow-engine-foundations`(主树 `/Users/leo/projects/synod`,`npm test` 104 + `acceptance` 42 = A1–A8);Track2(flow F0–F2)在 `flow-engine-core`(worktree `/Users/leo/projects/synod-flow`,`npm test` 146)。
 **下一步**:编排 **B 支(标记驱动 B1–B4)** + flow **F3–F7**(见末尾「下一步待办」)。daemon 已是 0.6.0 且稳定。
 
@@ -19,7 +19,7 @@ Synod 在落地**用原生 JS 编排固定工作流的引擎** + 两条 **agent 
 2. 讨论一系列需求,沉淀成设计文档:**flow 工作流引擎** + **agent 间转发/编排** + **agent 受控拉起会话**。
 3. 给 flow 引擎写了**设计**(`WORKFLOW_ENGINE.md`)+ **写法规则/模板**(`FLOW_AUTHORING.md`),两次拉 codex+deepseek 评审并采纳修订。
 4. 把两块需求写成两份 **TDD 开发计划**,又经 codex+deepseek 评审采纳修订。
-5. 把两条公共地基拆成 **开工 checklist**(`FOUNDATIONS_CHECKLIST.md`),按**角色分工**开始执行:**deepseek 开发 / codex 审核 / 我规划协调验收**。
+5. 把两条公共地基拆成 **开工 checklist**(`FOUNDATIONS_CHECKLIST.md`),按**角色分工**开始执行:**deepseek 开发 / codex 审核+测试 / 我规划协调验收**。
 6. 完成地基 1(见下)。
 7. (并行的另一件事)从消费方角度给 agent-bridge MCP 写了反馈清单 → `/Users/leo/projects/agent-bridge/docs/CONSUMER_FEEDBACK.md`,**用户已据此自行实现 0.6.0**(别动那文件)。
 
@@ -58,37 +58,40 @@ Synod 在落地**用原生 JS 编排固定工作流的引擎** + 两条 **agent 
 
 ### 1. Claude Code(我)= 规划 + 协调调度 + 监控 + 验收
 - 把 checklist 拆成带边界和验收标准的**任务规格**;决定先做哪个、依赖顺序。
-- **派活**给 deepseek、把审核**派**给 codex;`Task` 工具跟踪进度。
+- **派活**给 deepseek、把审核+测试**派**给 codex;`Task` 工具跟踪进度。
 - **亲自验收**:每步自己跑 `npm test` + 查 `git diff` 看产物,**不信任 agent 的回传文本**。
 - 对 codex 的审核意见**分诊**:判断哪些采纳、哪些反驳,再决定是否打回 deepseek。
 - 闭环把关;遇 daemon 冲会话时按"查盘 + 只补还差的"恢复。
-- **不亲自写实现代码**——实现交给 deepseek(这是用户定的分工)。
+- **不亲自写实现代码**——实现和测试都交给 deepseek 写(codex 只读审+跑测试,这是用户定的分工)。
 
-### 2. deepseek-v4-pro = 开发(写代码 + 写测试)
+### 2. deepseek-v4-pro = 开发(写代码 + 写**全部**测试)
 - 会话:`agent:"omp"` + `model:"deepseek/deepseek-v4-pro"` + `effort:"xhigh"` + **`write:true`**。
-- 按我给的任务规格写代码和测试;**只动任务范围内的文件**(我会在规格里写死边界,如"不碰 `src/`")。
+- 按我给的任务规格写代码**和测试**(测试一律由 deepseek 写,**唯一写者**);**只动任务范围内的文件**(我会在规格里写死边界,如"不碰 `src/`")。
+- codex 审出的漏测/补测点,也**由 deepseek 落地**。
 - 完成后报告:改/建了哪些文件 + 自跑 `npm test` 结果。
 - **不做审核、不自行扩大范围**。
 
-### 3. codex = 审核(只读,挑问题)
-- 会话:`agent:"codex"` + **`write:false`**(只读,**不改代码**)。
-- 审 deepseek 产出的代码与测试质量:挑 fidelity 不对齐、"测了等于没测"的假信心、漏测、过度设计;给**具体位置 + 怎么改**。
-- 通过就明确回 "OK";有问题就列清单。**不写实现代码。**
-- (实战印证:codex 在 T1.2 审出 5 处 FakeSession 与真实 Session 不对齐,正是它的价值所在。)
+### 3. codex = 审核 + 测试验证(只读,挑问题 + 跑测试)
+- 会话:`agent:"codex"` + **`write:false`**(只读,**不改代码、不写测试**——避免和 deepseek 两写者撞文件)。
+- **审**:审 deepseek 产出的代码与测试质量:挑 fidelity 不对齐、"测了等于没测"的假信心、漏测、过度设计;给**具体位置 + 怎么改**。
+- **测**:**独立跑测试做验证**——自己执行 `npm test`(只读运行,不依赖回传文本),确认产物真绿;对可疑点用实际运行佐证(复现 bug / 证明某测试空转)。
+- 发现漏测/弱测:给出**具体补测用例和断言**;因 `write:false`,**补测由 deepseek 落地实现**,codex 再复审复跑。
+- 通过(代码审过 + 测试实跑绿)才明确回 "OK";有问题就列清单。**不写实现代码、不写测试。**
+- (实战印证:codex 在 T1.2 审出 5 处 FakeSession 与真实 Session 不对齐;在 A2/relay 审出"测了等于没测"的 spy 假信心——审 + 实跑正是它的价值所在。)
 
 ### 每个任务的闭环
 ```
 我写任务规格
-  → deepseek 开发(write,非阻塞派发,短超时轮询)
+  → deepseek 开发(代码+测试,write,非阻塞派发,短超时轮询)
   → 我 git diff + 跑 npm test 验产物（不信回传）
-  → codex 审（只读，挑问题）
-  → 有问题 → 我分诊 → 打回 deepseek 修 → codex 复审
-  → 无问题 + 测试绿 → 我验收 → 下一任务
+  → codex 审 + 独立跑 npm test 验证（只读，挑问题 + 实跑佐证）
+  → 有问题/漏测 → 我分诊 → 打回 deepseek 修/补测 → codex 复审 + 复跑
+  → 代码审过 + 测试实跑绿 → 我验收 → 下一任务
 ```
 
 ## agent-bridge 运维要点(踩过的坑,务必遵守)
 
-- 用 `agent_bridge_*` MCP 工具派活。开发用 deepseek = `agent:"omp"` + `model:"deepseek/deepseek-v4-pro"` + `effort:"xhigh"` + `write:true`;审核用 `agent:"codex"` + `write:false`。
+- 用 `agent_bridge_*` MCP 工具派活。开发用 deepseek = `agent:"omp"` + `model:"deepseek/deepseek-v4-pro"` + `effort:"xhigh"` + `write:true`;审核+测试用 `agent:"codex"` + **`write:false`**(只读;审 + **自己跑 `npm test` 验证**,不依赖回传;漏测打回 deepseek 补)。
 - **派活 `wait:false` + 短超时 `agent_bridge_wait`(5–10 分钟)轮询**,没完返回 `{timed_out/timedOut,...}` 不报错,再 wait;别死等。
 - **产物以盘为准**:`git diff` + 自己跑 `npm test`,**不信回传文本**(回传 text 不含 filesChanged)。
 - **daemon 重启会冲掉会话**(0.6.0 已稳,但仍可能发生):遇到 "Unknown session" 先 `agent_bridge_status mine:true` 看是否被冲;**文件已落盘,只补"还差的部分",别从头来**。0.6.0 返回值是 camelCase(sessionId/logFile/lastTurn/charCount/textRef…);别对 omp 会话拉全量 recentEvents,用 `result`/`wait`。
@@ -109,7 +112,7 @@ Synod 在落地**用原生 JS 编排固定工作流的引擎** + 两条 **agent 
 
 ## 下一步待办(接手从这里开始)
 
-**剩余 9 个增量**:编排 B 支 4 个(B1–B4)+ flow 5 个(F3–F7),做完即达本期规划完整范围(留门不做:持久化/恢复)。仍按 deepseek 开发 / codex 审 / Claude Code 验收的闭环跑;**每个增量是一轮闭环,复杂的会反复 5–6 轮(F1/F2 都是),简单的 1–2 轮**。谁能并发见本节末「并行性」。
+**剩余 9 个增量**:编排 B 支 4 个(B1–B4)+ flow 5 个(F3–F7),做完即达本期规划完整范围(留门不做:持久化/恢复)。仍按 deepseek 开发 / codex 审+测 / Claude Code 验收的闭环跑;**每个增量是一轮闭环,复杂的会反复 5–6 轮(F1/F2 都是),简单的 1–2 轮**。谁能并发见本节末「并行性」。
 
 **Track 1 · 编排 B 支(标记驱动)** — 在 `flow-engine-foundations`(主树),依据 `docs/AGENT_ORCHESTRATION_TDD.md` 的 B1–B4:
 - **B1** `src/control-marker.mjs`(纯解析器,**测试最重**):识别 agent 输出里的严格唯一标记 → 命令数组。**核心难点:抗误触发**——agent 被告知语法后会在解释/引用时原样输出标记(代码块示例、"怎么用这个标记"的散文),必须**不**误当指令;在**完整 turn 文本**上解析(非裸 delta);去重;损坏 JSON 跳过+warning 不抛。可能需 nonce/握手。
