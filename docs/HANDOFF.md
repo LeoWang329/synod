@@ -109,7 +109,7 @@ Synod 在落地**用原生 JS 编排固定工作流的引擎** + 两条 **agent 
 
 ## 下一步待办(接手从这里开始)
 
-两条线都可继续并行(文件不相交:Track1 改 cli/orchestration,Track2 改 `src/flow/`),仍按 deepseek 开发 / codex 审 / 我验收的闭环跑。
+**剩余 9 个增量**:编排 B 支 4 个(B1–B4)+ flow 5 个(F3–F7),做完即达本期规划完整范围(留门不做:持久化/恢复)。仍按 deepseek 开发 / codex 审 / Claude Code 验收的闭环跑;**每个增量是一轮闭环,复杂的会反复 5–6 轮(F1/F2 都是),简单的 1–2 轮**。谁能并发见本节末「并行性」。
 
 **Track 1 · 编排 B 支(标记驱动)** — 在 `flow-engine-foundations`(主树),依据 `docs/AGENT_ORCHESTRATION_TDD.md` 的 B1–B4:
 - **B1** `src/control-marker.mjs`(纯解析器,**测试最重**):识别 agent 输出里的严格唯一标记 → 命令数组。**核心难点:抗误触发**——agent 被告知语法后会在解释/引用时原样输出标记(代码块示例、"怎么用这个标记"的散文),必须**不**误当指令;在**完整 turn 文本**上解析(非裸 delta);去重;损坏 JSON 跳过+warning 不抛。可能需 nonce/握手。
@@ -123,6 +123,13 @@ Synod 在落地**用原生 JS 编排固定工作流的引擎** + 两条 **agent 
 - **F5** `reviseWithHuman`(方案A 自然语言定位;复用=优化非依赖,每轮全文显式传入;/abort 优雅退出不杀进程)。
 - **F6** `runWorkflow` 嵌套(父拉子拿返回值,log 带 parentRunId)+ 深度/并发护栏。**注意**:current-run 现在是模块级活态(已支持嵌套 save/restore),并发仍需换 `AsyncLocalStorage`——F6 真要并发就在这儿处理。
 - **F7** `src/flow.mjs` 入口(`--list` 列名字+描述、跑 flow)+ `scripts/acceptance-flow.mjs` 真 agent e2e。
+
+### 并行性(可并发 vs 串行)
+
+- **两大条线之间(B 支 ∥ flow F3–F7)= ✅ 干净并行**:文件不相交(`control-*`+`cli.mjs` vs `src/flow/`)、各在一棵树,零冲突——就是已验证的 relay∥F2 那种。
+- **Track1 内 B1→B2→B3→B4 = ❌ 串行链**:B2 消费 B1 的命令结构,B3 要 B1+B2,B4 要 B2/B3。(只有先冻死命令 schema 才能 B1∥B2,易漂移,不建议。)
+- **Track2 内 F3–F7 = ⚠️ 部分可拆**:F3(approve)/F4(loop+defer)/F6(nesting)**逻辑互不依赖**(TDD 画成链只是建议序;F6 只需 F2 的 runner);但 **F5 依赖 F3+F4,F7 最后**。摩擦:F3/F4/F6 都要往 `runtime.mjs`+`index.mjs` 挂原语 → **同一棵 worktree 并行写会撞 `runtime.mjs`**;真要并发得每原语再开 worktree、合并时手解冲突,提速有限。
+- **建议**:默认维持**两大条线并行**(零冲突、最划算);flow 那条若赶,可 F3∥F4 各开 worktree、接受 `runtime.mjs` 合并收口。
 
 ## 怎么恢复
 
