@@ -261,7 +261,10 @@ export class FakeSession extends EventEmitter {
 
     // Fake-specific config
     this._deltas = opts.deltas || [];
+    this._texts = opts.texts || null;
     this._failPrompt = Boolean(opts.failPrompt);
+    this._failAfter = opts.failAfter ?? null;
+    this._failAfterTriggered = false;
 
     // Tracking for test assertions
     this._closed = false;
@@ -283,6 +286,13 @@ export class FakeSession extends EventEmitter {
       throw new Error("simulated prompt failure");
     }
 
+    // failAfter: after N successful sends, the next send fails (one-shot).
+    // Used to simulate session drops mid-loop for reviseWithHuman tests.
+    if (this._failAfter != null && !this._failAfterTriggered && this.turnCount >= this._failAfter) {
+      this._failAfterTriggered = true;
+      throw new Error("simulated session failure");
+    }
+
     this.#setStatus("running", true);
     this.#emitEvent({ type: "agent_start" });
 
@@ -290,13 +300,26 @@ export class FakeSession extends EventEmitter {
     // agent_start clears lastAssistantText)
     this.lastAssistantText = "";
 
-    for (const delta of this._deltas) {
-      this.lastAssistantText += delta;
-      this.emit("delta", delta);
-      this.#emitEvent({
-        type: "message_update",
-        message: { type: "text_delta", delta },
-      });
+    if (this._texts && this._texts.length > 0) {
+      // Per-turn text responses: consume next entry, clamp to last if exhausted
+      const idx = Math.min(this.turnCount, this._texts.length - 1);
+      this.lastAssistantText = this._texts[idx];
+      if (this.lastAssistantText) {
+        this.emit("delta", this.lastAssistantText);
+        this.#emitEvent({
+          type: "message_update",
+          message: { type: "text_delta", delta: this.lastAssistantText },
+        });
+      }
+    } else {
+      for (const delta of this._deltas) {
+        this.lastAssistantText += delta;
+        this.emit("delta", delta);
+        this.#emitEvent({
+          type: "message_update",
+          message: { type: "text_delta", delta },
+        });
+      }
     }
 
     this.turnCount++;

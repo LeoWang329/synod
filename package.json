@@ -10,7 +10,11 @@
   "scripts": {
     "start": "node src/cli.mjs",
     "test": "node --test",
-    "test:e2e": "node scripts/acceptance.mjs"
+    "test:e2e": "node scripts/acceptance.mjs",
+    "test:e2e-flow": "node scripts/acceptance-flow.mjs"
+  },
+  "exports": {
+    "./flow": "./src/flow/index.mjs"
   },
   "engines": {
     "node": ">=20"
