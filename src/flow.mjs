@@ -15,6 +15,7 @@
  * When no input is given, the flow receives `undefined`.
  */
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRuntime } from "./flow/runtime.mjs";
@@ -238,10 +239,19 @@ export async function main({
 }
 
 // ── Run guard ────────────────────────────────────────────────────────────
-
-const _isMain =
-  process.argv[1] &&
-  fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+// realpath both sides so symlinked installs (npm link / npm i -g) still match —
+// see src/cli.mjs isEntrypoint() for the full rationale.
+function isEntrypoint(metaUrl) {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const self = fileURLToPath(metaUrl);
+  try {
+    return realpathSync(self) === realpathSync(entry);
+  } catch {
+    return self === resolve(entry);
+  }
+}
+const _isMain = isEntrypoint(import.meta.url);
 
 if (_isMain) {
   main()

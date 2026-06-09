@@ -9,6 +9,7 @@
 
 import path from "node:path";
 import readline from "node:readline";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { doctor, openBackend as realOpenBackend } from "./backend.mjs";
 import { createSessionManager, createLineBuffer, checkAgentAvailable, AGENTS } from "./session-manager.mjs";
@@ -529,9 +530,20 @@ async function main({
 let gSessions = null;
 
 // ── Run guard: only execute main + register handlers when this file is the entry point ──
-const _isMain =
-  process.argv[1] &&
-  fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+// realpath both sides so symlinked installs (npm link / npm i -g) still match:
+// the bin shim passes the *link* path as argv[1] while Node resolves import.meta.url
+// to the *real* path — comparing raw strings would silently skip main().
+function isEntrypoint(metaUrl) {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const self = fileURLToPath(metaUrl);
+  try {
+    return realpathSync(self) === realpathSync(entry);
+  } catch {
+    return self === path.resolve(entry);
+  }
+}
+const _isMain = isEntrypoint(import.meta.url);
 
 if (_isMain) {
   // ── Module-level SIGINT ──────────────────────────────────────────────
