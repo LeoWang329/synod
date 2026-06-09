@@ -3,9 +3,15 @@
 > 这里记录我们讨论后**确定要做**的事项。你说"记录 …",我就把对应内容追加进来。
 > 创建于 2026-06-07。
 
-## 待办
+## 进行中索引
 
-- **工作流引擎(用原生 JS 编排固定工作流)** —— 设计 [`WORKFLOW_ENGINE.md`](WORKFLOW_ENGINE.md);写法规则+模板 [`FLOW_AUTHORING.md`](FLOW_AUTHORING.md);**TDD 开发计划 [`WORKFLOW_ENGINE_TDD.md`](WORKFLOW_ENGINE_TDD.md)**。
+> **1–3 已完成并合入 `main`**(flow 引擎 F0–F7 + relay + 标记驱动编排 B1–B4;见 [`HANDOFF.md`](HANDOFF.md))。
+> **4–5 的 TDD 开发计划见 [`MESH_ORCHESTRATION_TDD.md`](MESH_ORCHESTRATION_TDD.md)**(nonce 根治 + 编排技能注入;起草 2026-06-09,已过三方评审)。
+> **item 6 聊天室已移除**(2026-06-09 决定暂不做;原设计草案见本文件 git 历史)。
+
+## 已完成
+
+- ✅ **工作流引擎(用原生 JS 编排固定工作流)**(2026-06-09 合入 main)—— 设计 [`WORKFLOW_ENGINE.md`](WORKFLOW_ENGINE.md);写法规则+模板 [`FLOW_AUTHORING.md`](FLOW_AUTHORING.md);**TDD 开发计划 [`WORKFLOW_ENGINE_TDD.md`](WORKFLOW_ENGINE_TDD.md)**。
   - **Synod=底座(执行+原语+日志+清理),flow `.mjs`=控制核心**。把 agent 按 串行/并行/循环/回退 串成"经过审核打磨的固定工作流";节点含 模型调用 / bash / 人工审批 / **人在环修订(方案A:自然语言定位)**;flow 可嵌套拉起其他 flow。
   - **发现/命名**:flow 放固定目录 `workflows/`,Synod 扫描;**名字=文件名(去扩展名)**;`meta.description` 被提取到列表;扫描时按 FLOW_AUTHORING 规则校验、拒绝乱写。
   - 控制流用原生 JS,不发 DSL;复用后端 `session.send(wait:true)`。关键约束:run log(day-one JSONL)、`ctx` 纯数据可序列化、会话默认一次性、**回退=喂回反馈让 agent 定向修正(整段回滚已否决),用 `defer` 清附带副作用**。
@@ -13,12 +19,14 @@
 
 > 下面两条的 TDD 开发计划见 **[`AGENT_ORCHESTRATION_TDD.md`](AGENT_ORCHESTRATION_TDD.md)**(relay + 标记驱动)。
 
-- **agent 间自动转发 / 编排**:让一个会话的输出能自动流给另一个会话(而非只靠人手动 `@label` 转)。例如把某会话的 delta 转发进另一个会话的 sendQueue,或加 `/relay A->B` 之类指令。当前 MVP1 是"人在中间路由",会话之间隔离、互不可见。
+- ✅ **agent 间自动转发 / 编排(relay)**(2026-06-09 合入 main)—— 让一个会话的输出能自动流给另一个会话(而非只靠人手动 `@label` 转)。已落地 `/relay A->B` / `/unrelay` / `/relays`,按完整 turn 转发、防环防回声、关会话自动解绑。当前 MVP1 是"人在中间路由",会话之间隔离、互不可见。
 
-- **agent 受控拉起 / 管理另一个 Synod 会话**:让一个 agent(如 codex)能让 Synod 新开/管理另一个会话(如 omp),并能拿到结果。当前不可行——agent 接口只有"收文本 / 吐文本",没有面向 agent 的控制口子。
+- ✅ **agent 受控拉起 / 管理另一个 Synod 会话(标记驱动 B1–B4)**(2026-06-09 合入 main)—— 让一个 agent(如 codex)能让 Synod 新开/管理另一个会话(如 omp),并能拿到结果。已落地 control-marker/dispatch/wire(nonce + JSON 命令);**注意:item 5 的根治方案将把这套 nonce+JSON 协议改写为 ` ```synod ``` ` 围栏 + REPL 命令,见 [`MESH_ORCHESTRATION_TDD.md`](MESH_ORCHESTRATION_TDD.md)。**
   - **已有可复用**:`session` 已 `emit("event", …)` 抛出完整结构化事件(`backend.mjs:431`),但 cli 只听了 `delta`/`status`/`error`,这条干净旁路可拿来识别指令;开会话/发消息的动作原语(backend openSession、`sessions` Map、`sendQueue.enqueue`、`/open` 解析)都现成。
   - **要新建**:① agent→Synod 的指令约定(在输出里放一个严格唯一的标记,如 ` ```synod {"cmd":"open",...}``` `,cli 扫它);② 分发器(解析标记 → 调已有 `/open` / `enqueue`);③ 输出去向(回给人 还是 喂回发起的 agent——与上一条"编排"相关);④ 护栏(最大会话数、递归/深度上限、agent/model 白名单、尊重默认只读)。
   - **限制**:走"解析 agent 输出里的标记"(略脆,需在 prompt 里告知 agent 语法),**不走结构化 tool-call / MCP**——`--tools` 只是 omp 内置工具白名单,非宿主注入自定义工具的口子。**(已确认:不需要 Synod 引入 MCP。)**
+
+## 待办(TDD 计划见 [`MESH_ORCHESTRATION_TDD.md`](MESH_ORCHESTRATION_TDD.md))
 
 - **在 spawn 时把"编排技能"注入每个 agent(平级 mesh 的前提)** —— 让每个被 Synod 拉起的 agent 自带"怎么用总线"的指令(控制标记协议 + nonce),使每个 peer 都能发起对同级会话的 `open`/`send`;**且不预装进 agent 全局配置,单独使用零影响**。(2026-06-09 确定;为上一条"受控拉起"子项①提供具体落地机制。)
   - **注入字段(已核实 omp v15.10.7 / codex app-server 协议 schema)**:
@@ -40,15 +48,3 @@
     - **已接受的残留风险**:无授权 → agent 引用语法可能**误触发**;靠"围栏标记足够独特 + 护栏限制爆炸半径"兜底(**可信环境模型**:链路内无外部不可信内容)。
     - **波及**:现有 control-* 测试假设 nonce + JSON 命令,需重写为"围栏内 REPL 命令 + 护栏仍生效"。
     - **流程**:实质改动,按"先出方案 → deepseek+codex review → 实现 → e2e → 交叉验证"推进。
-
-- **agent 聊天室(多 agent 共处一室、共享记忆)—— flow 方案** —— 让多个 agent 在一个共享对话空间里轮流发言、互相看得见,而非只靠人手动 `@`。(2026-06-09 记录,方案 = flow 引擎编排。)
-  - **硬约束**:omp/codex 是各自独立进程,模型上下文在进程内,**无法真·共享模型记忆**。"共享记忆"只能**外置 + 投影**(放 agent 之外,再喂进各自上下文)。
-  - **核心机制(flow 当总线)**:flow 持有一块**权威共享记忆**(flow 的 JS 状态 / cwd 里一个文件),循环:**读黑板 → 选发言者 → 把相关切片投影进其 prompt → 收发言 → 更新黑板**,直到终止条件。**不用 relay 拼网状**——relay 是成对的、且会触发防环 guard,N 方会退化成"人人复制人人",贵且乱。
-  - **单一写者**:共享记忆**只由编排者写**(每轮追加发言者输出),agent **全程只读**——既符合默认只读(`--write` 才放开),又根除并发写冲突。
-  - **共享记忆形态(按 token / 结构化程度)**:① 全文转录(短对话,最贵);② **窗口 + 滚动摘要**(中长对话,可控);③ **结构化黑板**(只存 决策 / 已达成 / 分歧 / 待办,有目标协作时最省)。长对话别用全文转录。
-  - **两层记忆**:共享房间记忆(上面) vs 各 agent **私有会话记忆**——用 `reuse:true` 让每个 agent 记得自己说过啥,共享记忆只补别人的,投影更省。
-  - **秩序(聊天室的真难点,不在管道)**:必须显式定 **发言权仲裁**(固定轮询 / 被 `@` 到才说 / 一个主持 agent 点名)与**终止条件**(轮数上限 / 达成共识 / 人喊停),否则回声爆炸、同时开口、不收敛。
-  - **复用 synod 现成件**:所有 agent **同一 cwd** + 有文件工具(cwd 里的文件即共享记忆,只读即可)、flow `ctx` / run log、`agent(reuse)`、turn 完成事件。
-  - **MVP 草案**:`workflows/chatroom.mjs` —— 先用 窗口+滚动摘要、固定轮询、人可喊停;跑通形态后再加 主持/黑板。
-  - **成本提醒**:token ≈ 对话长度 × agent 数;靠摘要/黑板压。
-  - **验收判据**:无论走哪条,目标都是——"**被不可信内容注入的 agent,仅凭其上下文里的信息无法伪造出合法的控制指令**"。

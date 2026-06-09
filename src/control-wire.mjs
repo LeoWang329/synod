@@ -1,189 +1,81 @@
-// synod/src/control-wire.mjs — Control channel: wires marker parser + dispatch at turn completion.
+// synod/src/control-wire.mjs — Control wiring (A3: nonce-free, agent-fence dispatch).
 //
-// Connects extractControlCommands (B1) to dispatch (B2) at the same turn-completion
-// point used by relay (A2).  Follows the relay.mjs pattern: pure logic, single-factory
-// export, injectable dependencies.
+// Wires control-fence parsing + agent-fence dispatch at turn completion,
+// composited with relay.  Replaces the old nonce-based control-marker +
+// control-dispatch pipeline with the new nonce-free protocol.
 //
 // Exports:
-//   createControlChannel({ dispatch, nonce, onWarnings })
-//     — Low-level: parse + dispatch.  Returns { onTurnComplete, nonce }.
-//   wireControl({ sm, registry, stderr, guardrails })
-//     — CLI helper: creates dispatch+channel, composes relay+control into one
-//       onTurnComplete callback.  Uses documented default guardrails.
-//
-// ## Nonce handshake boundary
-//
-// Each control channel holds a nonce (default: crypto.randomUUID(),
-// overridable via `wireControl({ nonce })` or `SYNOD_CONTROL_NONCE` env var).
-// Only control fences tagged with `synod <this-nonce>` are recognized.
-//
-// **Env nonce = shared handshake secret**: when the CLI is spawned with
-// `SYNOD_CONTROL_NONCE`, backend subprocesses inherit the env and thus the
-// nonce.  This is by design — the agent *must* know the nonce to emit a valid
-// control fence.  It is NOT a leak; it is the channel-establishment handshake.
-// Per-session nonce rotation (fresh nonce per agent spawn) is future work.
-//
-// How the agent learns the nonce is the *handshake* — this module does NOT
-// inject the nonce into agent context.  That responsibility belongs to the
-// orchestrator layer (B4 / e2e) which prefixes the prompt or system message
-// with the nonce.  This module only threads the nonce to the parser side.
-// Tests simulate the agent knowing the correct nonce.
-//
-// ## Output routing (default: back to human)
-//
-// When a control command opens a child session via manager.open(), its output
-// goes to stdout through the normal line-buffer path — i.e., back to the human.
-// Feeding output back to the initiating agent requires an explicit relay rule
-// or send-back command; this is NOT automatic.  Rationale: simplest default,
-// least surprising, least error-prone.
-//
-// ## Delta honesty
-//
-// Deltas are streamed to the user character-by-character in real time.
-// Control fences within the stream CANNOT be stripped mid-stream — they
-// appear as visible text to the human.  Commands are only parsed and
-// dispatched after the turn completes (onTurnComplete), not during streaming.
-// This is an accepted limitation; same discipline as relay.  We do NOT pretend
-// mid-stream stripping is possible.
+//   wireControl({ sm, registry, stderr, dispatch })
+//     → { onTurnComplete(label, result) }
 
-import { randomUUID } from "node:crypto";
-import { extractControlCommands } from "./control-marker.mjs";
-import { createControlDispatch } from "./control-dispatch.mjs";
+import { extractFenceCommands } from "./control-fence.mjs";
 
 /**
- * Create a control channel.
+ * Wire control dispatch into the session manager, composing relay + control
+ * into a single onTurnComplete callback.
  *
- * @param {object} opts
- * @param {(commands: object[]) => Promise<{ dispatched: object[], rejected: object[] }>} opts.dispatch
- *   Dispatch function from createControlDispatch.
- * @param {string} [opts.nonce] — pre-existing nonce; if omitted, a fresh randomUUID is generated.
- * @param {(label: string, warnings: object[]) => void} [opts.onWarnings]
- *   Optional callback for parse/validation warnings (e.g. log to stderr).
- * @returns {{
- *   onTurnComplete: (label: string, turnText: string) => void,
- *   nonce: string,
- * }}
+ * @param {object} deps
+ * @param {object} deps.sm — session manager (_sessions for depth map queries)
+ * @param {object} deps.registry — relay registry (.onTurnComplete)
+ * @param {{ write(s: string): void }} deps.stderr
+ * @param {function} deps.dispatch — agent-fence dispatch (from createReplDispatch)
+ * @returns {{ onTurnComplete: (label: string, result: { text: string }) => Promise<void> }}
  */
-export function createControlChannel({ dispatch, nonce, onWarnings }) {
-  const _nonce = nonce || randomUUID();
+export function wireControl({ sm, registry, stderr, dispatch }) {
+  // Per-label depth tracking: when a session's turn produces a /open,
+  // the child gets depth + 1.  Wire layer maintains this map; dispatch
+  // receives depth as an input parameter.
+  const _depthMap = new Map();
 
   /**
-   * Called when a session completes a real turn (same hook as relay).
-   * Extracts control commands from the complete turn text and dispatches them.
+   * Called after each turn completes.  Runs relay first (synchronous),
+   * then processes any control fences in the turn text (fire-and-forget).
    *
-   * Dispatch is fire-and-forget — we do not block turn completion on command
-   * execution.  Rejections are collected by dispatch itself; errors never
-   * propagate back to the caller.
+   * @param {string} label — session label that produced this turn
+   * @param {{ text: string }} result
    */
-  function onTurnComplete(_label, turnText) {
-    if (!turnText) return;
+  async function onTurnComplete(label, result) {
+    const text = result?.text ?? "";
 
-    const { commands, warnings } = extractControlCommands(turnText, { nonce: _nonce });
+    // 1. Relay — synchronous enqueue of forwarded messages
+    registry.onTurnComplete(label, text);
 
-    if (onWarnings && warnings.length > 0) {
-      try { onWarnings(_label, warnings); } catch {}
+    // 2. Control fence extraction + dispatch
+    const { lines, warnings } = extractFenceCommands(text);
+
+    // Log warnings from fence parsing (R1 gate failures, etc.)
+    for (const w of warnings) {
+      stderr.write(`[control warn] ${w.reason}\n`);
     }
 
-    if (commands.length === 0) return;
+    if (!lines.length) return;
 
-    // Fire-and-forget.  Synchronous throw is caught so it cannot bubble up
-    // through the session-manager turn-completion point.  Async rejections
-    // are swallowed via .catch so they never become unhandledRejections.
-    let p;
-    try {
-      p = dispatch(commands, { label: _label });
-    } catch (_syncErr) {
-      // dispatch threw synchronously — swallow, do not propagate.
-      return;
-    }
-    if (typeof p?.catch === "function") {
-      p.catch(() => {});
-    }
+    // Fire-and-forget: dispatch runs asynchronously, errors do not
+    // propagate to the turn-completion caller.
+    (async () => {
+      const depth = _depthMap.get(label) ?? 0;
+
+      for (const line of lines) {
+        let r;
+        try {
+          r = await dispatch(line, { source: "agent-fence", depth });
+        } catch {
+          // Dispatch itself should not throw (all rejections are returned
+          // as {ok:false}), but guard against unexpected errors.
+          continue;
+        }
+
+        if (r && r.ok && r.label) {
+          // Child session created — record its depth
+          _depthMap.set(r.label, depth + 1);
+        } else if (r && !r.ok && r.reason) {
+          stderr.write(`[control warn] ${r.reason}\n`);
+        }
+      }
+    })().catch(() => {
+      // Fire-and-forget: silently drop any unhandled rejections
+    });
   }
 
-  return { onTurnComplete, nonce: _nonce };
-}
-
-/**
- * Wire control dispatch + channel into the session manager, composing
- * relay and control into a single onTurnComplete callback.
- *
- * This is the CLI integration helper.  It creates a control-dispatch
- * instance with the documented default guardrails, wraps it in a control
- * channel, and returns a combined onTurnComplete that feeds both relay
- * forwarding and control-command dispatch at every real turn completion.
- *
- * Default guardrails:
- *   maxSessions: 10
- *   maxDepth: 3
- *   allowWrite: false (read-only by default; write must be opt-in)
- *   allowedAgents: null (any agent)
- *   allowedModels: null (any model)
- *
- * @param {object} opts
- * @param {object} opts.sm — session-manager instance (must have open/enqueue/_sessions)
- * @param {{ onTurnComplete: (label: string, turnText: string) => void }} opts.registry
- *   Relay registry (or any object with onTurnComplete).  Called before control dispatch.
- * @param {NodeJS.WriteStream} opts.stderr — for guardrail/warning log output
- * @param {object} [opts.guardrails] — overrides for any default guardrail
- * @param {string} [opts.nonce] — pre-existing nonce; if omitted, a fresh randomUUID is generated
- * @returns {{
- *   onTurnComplete: (label: string, result: { text: string }) => void,
- *   nonce: string,
- * }}
- */
-export function wireControl({ sm, registry, stderr, guardrails, nonce }) {
-  const g = {
-    maxSessions: 10,
-    maxDepth: 3,
-    allowWrite: false,
-    ...guardrails,
-  };
-
-  const _depthMap = new Map(); // label → depth (0 = root, increments per control dispatch)
-
-  const controlDispatch = createControlDispatch({
-    manager: sm,
-    guardrails: g,
-    log: ({ level, reason }) => {
-      if (level === "warn" || level === "error") {
-        stderr.write(`[control ${level}] ${reason}\n`);
-      }
-    },
-  });
-
-  // Wrap dispatch with depth tracking: look up the initiating session's
-  // current depth, pass it as a per-call override to the dispatcher, then
-  // record child sessions at depth+1 so grandchildren are depth-clamped.
-  async function depthDispatch(commands, { label } = {}) {
-    const d = label ? (_depthMap.get(label) ?? 0) : 0;
-    const result = await controlDispatch(commands, { depth: d });
-    for (const item of result.dispatched) {
-      if (item.label) {
-        _depthMap.set(item.label, d + 1);
-      }
-    }
-    return result;
-  }
-
-  const control = createControlChannel({
-    dispatch: depthDispatch,
-    nonce,
-    onWarnings: (_label, warnings) => {
-      for (const w of warnings) {
-        stderr.write(`[control warn] line ${w.line}: ${w.reason}\n`);
-      }
-    },
-  });
-
-  /**
-   * Composed turn-completion callback: relay first, then control.
-   * Suitable for passing to createSessionManager's onTurnComplete option.
-   */
-  function onTurnComplete(label, result) {
-    registry.onTurnComplete(label, result.text);
-    control.onTurnComplete(label, result.text);
-  }
-
-  return { onTurnComplete, nonce: control.nonce };
+  return { onTurnComplete };
 }

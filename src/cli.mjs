@@ -13,8 +13,9 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { doctor, openBackend as realOpenBackend } from "./backend.mjs";
 import { createSessionManager, createLineBuffer, checkAgentAvailable, AGENTS } from "./session-manager.mjs";
-import { parseRelay, createRelayRegistry } from "./relay.mjs";
+import { createRelayRegistry } from "./relay.mjs";
 import { wireControl } from "./control-wire.mjs";
+import { createReplDispatch, parseOpenArgs } from "./repl-dispatch.mjs";
 
 // ── CLI parsing ──────────────────────────────────────────────────────
 function parseArgs(argv) {
@@ -23,6 +24,7 @@ function parseArgs(argv) {
     model: undefined,
     effort: undefined,
     write: false,
+    mesh: false,
     tasks: [],
     _unknown: null,
   };
@@ -63,6 +65,9 @@ function parseArgs(argv) {
       case "--write":
         out.write = true;
         break;
+      case "--mesh":
+        out.mesh = true;
+        break;
       case "--task": {
         const v = argv[++i];
         if (!v || v.startsWith("--")) {
@@ -99,6 +104,16 @@ function parseArgs(argv) {
   return out;
 }
 
+/**
+ * Read mesh flag from environment.  Only "1" and "true" are truthy.
+ * @param {object} env — typically process.env or an overridden map
+ * @returns {boolean}
+ */
+export function meshFromEnv(env) {
+  const v = env.SYNOD_MESH;
+  return v === "1" || v === "true";
+}
+
 function printHelp(stdout = process.stdout) {
   stdout.write(
     [
@@ -114,6 +129,7 @@ function printHelp(stdout = process.stdout) {
       "  --effort <E>          Reasoning effort (omp, e.g. high/xhigh)",
       "  --write               Allow file writes (default: read-only)",
       "  --task <agent>:<msg>  Run task non-interactively (repeatable)",
+      "  --mesh                Inject orchestration skill into spawned agents (default: off)",
       "  -h, --help            Show this help",
       "",
       "REPL commands:",
@@ -132,43 +148,6 @@ function printHelp(stdout = process.stdout) {
   );
 }
 
-/** Parse "/open --agent x --model y ..." into an options object.
- *  @param {string[]} tokens — already-split arguments (e.g. ["--agent","codex","--model","mini"])
- *  @returns {{ agent?:string, model?:string, effort?:string, write?:boolean, error?:string }}
- */
-function parseOpenArgs(tokens) {
-  const opts = {};
-  for (let i = 0; i < tokens.length; i += 1) {
-    const tok = tokens[i];
-    switch (tok) {
-      case "--agent":
-      case "--model":
-      case "--effort": {
-        const v = tokens[++i];
-        if (v === undefined || v.startsWith("--")) {
-          return { error: `${tok} requires a value` };
-        }
-        if (tok === "--agent") {
-          if (!AGENTS.includes(v)) {
-            return { error: `--agent must be one of ${AGENTS.join(", ")} (got "${v}")` };
-          }
-          opts.agent = v;
-        } else if (tok === "--model") {
-          opts.model = v;
-        } else {
-          opts.effort = v;
-        }
-        break;
-      }
-      case "--write":
-        opts.write = true;
-        break;
-      default:
-        return { error: `Unknown option: ${tok}` };
-    }
-  }
-  return opts;
-}
 
 // ── REPL ─────────────────────────────────────────────────────────────
 function createRepl({ prompt, onLine, onClose, stdin = process.stdin, stdout = process.stdout }) {
@@ -220,7 +199,7 @@ async function runTasks(tasks, report, baseOpts, { openBackend, stdout = process
   const sm = createSessionManager({
     openBackend, stdout, stderr, report,
     cwd: baseOpts.cwd,
-    defaults: { model: baseOpts.model, effort: baseOpts.effort, write: baseOpts.write },
+    defaults: { model: baseOpts.model, effort: baseOpts.effort, write: baseOpts.write, mesh: baseOpts.mesh },
     onIdle: () => {}, // no prompt redraw in non-interactive mode
   });
 
@@ -291,7 +270,7 @@ async function main({
   stdout = process.stdout,
   stderr = process.stderr,
   argv = process.argv,
-  nonce = process.env.SYNOD_CONTROL_NONCE || undefined,
+  env = process.env,
 } = {}) {
   const args = parseArgs(argv.slice(2));
   if (args._help) {
@@ -306,10 +285,11 @@ async function main({
 
   const report = doctor();
   const cwd = path.resolve(process.cwd());
+  const mesh = args.mesh || meshFromEnv(env);
 
   // ── Non-interactive ────────────────────────────────────────────────
   if (args.tasks.length > 0) {
-    return runTasks(args.tasks, report, { model: args.model, effort: args.effort, write: args.write, cwd }, { openBackend, stdout, stderr });
+    return runTasks(args.tasks, report, { model: args.model, effort: args.effort, write: args.write, mesh, cwd }, { openBackend, stdout, stderr });
   }
 
   // ── Interactive mode ───────────────────────────────────────────────
@@ -331,7 +311,7 @@ async function main({
 
   const sm = createSessionManager({
     openBackend, stdout, stderr, report, cwd,
-    defaults: { model: args.model, effort: args.effort, write: args.write },
+    defaults: { model: args.model, effort: args.effort, write: args.write, mesh },
     onIdle: (label) => {
       if (repl && label === sm.currentLabel) repl.writePrompt();
     },
@@ -342,157 +322,35 @@ async function main({
   });
   _smForRelay = sm;
 
+  // ── REPL dispatch (created before wireControl so it can be passed in) ──
+  const dispatch = createReplDispatch({
+    sm, registry, stdout, stderr,
+    defaultAgent: args.agent,
+    guardrails: { maxSessions: 10, maxDepth: 3, allowWrite: false },
+  });
+
   const { onTurnComplete: composedOnTurnComplete } = wireControl({
-    sm, registry, stderr, nonce,
+    sm, registry, stderr, dispatch,
   });
   _composedOnTurnComplete = composedOnTurnComplete;
-
-  // Wire module-level SIGINT handler to these sessions
+  // Wire module-level SIGINT handler to these sessions (same as runTasks)
   gSessions = sm._sessions;
-  // ── REPL dispatch ──────────────────────────────────────────────────
   repl = createRepl({
     prompt: "> ",
     stdin,
     stdout,
-    onLine: async (line) => {
-      // ── / commands ────────────────────────────────────────────────
-      if (line.startsWith("/")) {
-        const [cmd, ...rest] = line.split(/\s+/);
-
-        if (cmd === "/exit" || cmd === "/quit") {
-          repl.closeRl();
-          return;
-        }
-
-        if (cmd === "/sessions") {
-          sm.list();
-          repl.writePrompt();
-          return;
-        }
-
-        if (cmd === "/relay") {
-          const spec = rest.join(" ");
-          const parsed = parseRelay(spec);
-          if (parsed.error) {
-            stderr.write(`${parsed.error}\n`);
-            repl.writePrompt();
-            return;
-          }
-          // Validate both labels exist
-          if (!sm._sessions.has(parsed.from)) {
-            stderr.write(`No session "${parsed.from}"\n`);
-            repl.writePrompt();
-            return;
-          }
-          if (!sm._sessions.has(parsed.to)) {
-            stderr.write(`No session "${parsed.to}"\n`);
-            repl.writePrompt();
-            return;
-          }
-          try {
-            registry.add(parsed.from, parsed.to);
-            stdout.write(`Relay added: ${parsed.from} -> ${parsed.to}\n`);
-          } catch (err) {
-            stderr.write(`${err.message}\n`);
-          }
-          repl.writePrompt();
-          return;
-        }
-
-        if (cmd === "/unrelay") {
-          const spec = rest.join(" ");
-          const parsed = parseRelay(spec);
-          if (parsed.error) {
-            stderr.write(`${parsed.error}\n`);
-          } else {
-            registry.remove(parsed.from, parsed.to);
-            stdout.write(`Relay removed: ${parsed.from} -> ${parsed.to}\n`);
-          }
-          repl.writePrompt();
-          return;
-        }
-
-        if (cmd === "/relays") {
-          const rules = registry.list();
-          if (rules.length === 0) {
-            stdout.write("No active relay rules.\n");
-          } else {
-            stdout.write("Active relays:\n");
-            for (const r of rules) {
-              stdout.write(`  ${r.from} -> ${r.to}\n`);
-            }
-          }
-          repl.writePrompt();
-          return;
-        }
-
-        if (cmd === "/use") {
-          const target = rest[0];
-          if (!target) {
-            stderr.write("Usage: /use <label>\n");
-          } else {
-            const switched = sm.use(target);
-            if (switched) stdout.write(`Switched to ${target}\n`);
-          }
-          repl.writePrompt();
-          return;
-        }
-
-        if (cmd === "/open") {
-          const opts = parseOpenArgs(rest);
-          if (opts.error) {
-            stderr.write(`${opts.error}\n`);
-            repl.writePrompt();
-            return;
-          }
-
-          const agent = opts.agent || args.agent;
-
-          const label = await sm.open({
-            agent,
-            model: opts.model,
-            effort: opts.effort,
-            write: opts.write,
-            announce: "interactive",
-          });
-          if (!label) {
-            // sm.open already wrote the error to stderr; just redraw prompt
-          }
-          repl.writePrompt();
-          return;
-        }
-
-        stderr.write(`Unknown command: ${cmd}\n`);
+    // onLine is synchronous: dispatch() returns synchronously for all commands
+    // except /open (which returns a Promise).  Keeping /exit synchronous is
+    // critical for piped stdin — closeRl() must run before the next 'line' event.
+    onLine: (line) => {
+      const r = dispatch(line, { source: "human" });
+      if (r && typeof r.then === "function") {
+        r.then((res) => { if (res.redraw) repl.writePrompt(); });
+      } else if (r.exit) {
+        repl.closeRl();
+      } else if (r.redraw) {
         repl.writePrompt();
-        return;
       }
-
-      // ── @ directed messages ───────────────────────────────────────
-      if (line.startsWith("@")) {
-        const spaceIdx = line.indexOf(" ");
-        if (spaceIdx === -1) {
-          stderr.write("Usage: @<label> <message> or @all <message>\n");
-          repl.writePrompt();
-          return;
-        }
-        const target = line.slice(1, spaceIdx);
-        const msg = line.slice(spaceIdx + 1).trim();
-        if (!msg) {
-          repl.writePrompt();
-          return;
-        }
-
-        const ok = sm.enqueue({ target, msg });
-        if (ok === false) repl.writePrompt();
-        // Don't redraw prompt — streaming output follows asynchronously;
-        // the status handler will redraw when the turn finishes.
-        return;
-      }
-
-      // ── Normal line → current session ─────────────────────────────
-      const ok = sm.enqueue({ msg: line });
-      if (ok === false) repl.writePrompt();
-      // Don't redraw prompt — status handler will when turn finishes.
     },
 
     onClose: async () => {

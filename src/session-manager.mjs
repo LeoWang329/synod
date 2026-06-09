@@ -73,10 +73,10 @@ function checkAgentAvailable(agent, report, stderr = process.stderr) {
 }
 
 // ── Backend opener ────────────────────────────────────────────────────
-async function openSession({ agent, model, effort, write, cwd, report, openBackend, stderr }) {
+async function openSession({ agent, model, effort, write, mesh, cwd, report, openBackend, stderr }) {
   if (!checkAgentAvailable(agent, report, stderr)) return null;
   try {
-    return await openBackend({ agent, cwd, write, model, effort });
+    return await openBackend({ agent, cwd, write, model, effort, mesh });
   } catch (err) {
     stderr.write(`synod: failed to open ${agent} session: ${err.message}\n`);
     return null;
@@ -101,7 +101,7 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
   const _sessions = new Map(); // label → { session, agent, model, effort, lineBuf, sendQueue }
   let _currentLabel = null;
 
-  const _defaults = { model: undefined, effort: undefined, write: false, ...defaults };
+  const _defaults = { model: undefined, effort: undefined, write: false, mesh: false, ...defaults };
   const _onIdle = onIdle || (() => {});
   const _onTurnComplete = onTurnComplete || null;
   const _nl = errorLeadingNewline ? "\n" : "";
@@ -128,10 +128,11 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
    *   - false:          silent (default session)
    * @returns {Promise<string|null>} label on success, null on failure
    */
-  async function open({ agent, model, effort, write, announce = false }) {
+  async function open({ agent, model, effort, write, mesh, announce = false }) {
     const m = model ?? _defaults.model;
     const e = effort ?? _defaults.effort;
     const w = write ?? _defaults.write;
+    const me = mesh ?? _defaults.mesh;
 
     if (!AGENTS.includes(agent)) {
       stderr.write(`Unknown agent: ${agent}\n`);
@@ -147,7 +148,7 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
     }
 
     const session = await openSession({
-      agent, model: m, effort: e, write: w,
+      agent, model: m, effort: e, write: w, mesh: me,
       cwd, report, openBackend, stderr,
     });
     if (!session) return null;

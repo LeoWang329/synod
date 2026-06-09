@@ -15,6 +15,7 @@
 //                     — win32 branch added for cross-platform support
 //   OmpSession:       forked from OmpRpcSession (466–780), renamed
 //   CodexSession:     forked from CodexAppServerSession (782–1255), renamed
+import { MESH_INSTRUCTIONS } from "./mesh-instructions.mjs";
 //   doctor:           forked from doctor (1401), restructured for Synod export
 //
 // Deliberately omitted:
@@ -384,6 +385,7 @@ class OmpSession extends EventEmitter {
     this.agent = "omp";
     this.cwd = assertCwd(options.cwd);
     this.write = Boolean(options.write);
+    this.mesh = Boolean(options.mesh);
     this.model = sanitizeAgentArg(options.model || null, "model");
     this.effort = sanitizeAgentArg(options.effort || null, "effort");
     this.createdAt = nowIso();
@@ -422,6 +424,10 @@ class OmpSession extends EventEmitter {
         "--approval-mode",
         "yolo",
       );
+    }
+
+    if (this.mesh) {
+      args.push(`--append-system-prompt=${MESH_INSTRUCTIONS}`);
     }
 
     appendLog(
@@ -796,6 +802,7 @@ class CodexSession extends EventEmitter {
     this.agent = "codex";
     this.cwd = assertCwd(options.cwd);
     this.write = Boolean(options.write);
+    this.mesh = Boolean(options.mesh);
     this.model = sanitizeAgentArg(options.model || null, "model");
     this.effort = sanitizeAgentArg(options.effort || null, "effort");
     this.createdAt = nowIso();
@@ -922,16 +929,21 @@ class CodexSession extends EventEmitter {
     );
     this.#notify("initialized", {});
 
+    const threadParams = {
+      cwd: this.cwd,
+      model: this.model,
+      approvalPolicy: "never",
+      sandbox: this.write ? "workspace-write" : "read-only",
+      serviceName: "agent_bridge",
+      ephemeral: true,
+      experimentalRawEvents: false,
+    };
+    if (this.mesh) {
+      threadParams.developerInstructions = MESH_INSTRUCTIONS;
+    }
+
     const started = await withTimeout(
-      this.#request("thread/start", {
-        cwd: this.cwd,
-        model: this.model,
-        approvalPolicy: "never",
-        sandbox: this.write ? "workspace-write" : "read-only",
-        serviceName: "agent_bridge",
-        ephemeral: true,
-        experimentalRawEvents: false,
-      }),
+      this.#request("thread/start", threadParams),
       20000,
       "Timed out on codex thread/start.",
     );
@@ -1455,12 +1467,13 @@ export async function openBackend({
   write = false,
   model,
   effort,
+  mesh = false,
   spawnImpl,
 }) {
   ensureDirs();
   assertAgent(agent);
   const effectiveSpawn = spawnImpl || _defaultSpawn;
-  const options = { cwd, write, model, effort, spawn: effectiveSpawn };
+  const options = { cwd, write, model, effort, mesh, spawn: effectiveSpawn };
   const session =
     agent === "omp"
       ? new OmpSession(options)

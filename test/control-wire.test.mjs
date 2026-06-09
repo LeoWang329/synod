@@ -1,495 +1,346 @@
+// synod/test/control-wire.test.mjs — Tests for wireControl (A3: nonce-free, agent-fence dispatch).
+//
+// Covers:
+// 1. onTurnComplete: relay runs first, then control (fire-and-forget)
+// 2. extractFenceCommands produces lines → dispatch with source:"agent-fence"
+// 3. depth map: child gets depth+1, grandchild blocked by maxDepth
+// 4. warnings route to stderr
+// 5. fire-and-forget: async reject does not crash
+// 6. relay+control composited: both effects visible, no cross-contamination
+// 7. empty turn (no lines, no relay matches) → silent
+
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { createControlChannel, wireControl } from "../src/control-wire.mjs";
-import { createControlDispatch } from "../src/control-dispatch.mjs";
-import { createSessionManager } from "../src/session-manager.mjs";
-import { createRelayRegistry } from "../src/relay.mjs";
-import { fakeOpenBackend } from "./helpers/fake-backend.mjs";
+import { wireControl } from "../src/control-wire.mjs";
 
-// ── Helpers ──────────────────────────────────────────────────────────
+// ── helpers ──────────────────────────────────────────────────────────────
 
 function captureStream() {
   return { buf: "", write(s) { this.buf += s; } };
 }
 
-const FAKE_REPORT = { omp: { available: true }, codex: { available: true } };
-
-function makeOpenBackend(sessionOpts = {}) {
-  return (opts) => fakeOpenBackend({ ...sessionOpts, ...opts });
+function fakeSm(opts = {}) {
+  const _sessions = new Map(opts._sessions || []);
+  const calls = { open: [], enqueue: [], use: [], list: 0 };
+  let _currentLabel = opts.currentLabel || null;
+  return {
+    _sessions,
+    get currentLabel() { return _currentLabel; },
+    setCurrentLabel(l) { _currentLabel = l; },
+    open: async (o) => {
+      calls.open.push({ ...o });
+      if (opts.openResult === undefined) return `${o.agent}#${opts.labelSuffix ?? 1}`;
+      return opts.openResult;
+    },
+    enqueue: (o) => {
+      calls.enqueue.push({ ...o });
+      return opts.enqueueResult !== undefined ? opts.enqueueResult : true;
+    },
+    use: (target) => {
+      calls.use.push(target);
+      return opts.useResult !== undefined ? opts.useResult : true;
+    },
+    list: () => { calls.list++; },
+    calls,
+    _currentLabel,
+  };
 }
 
-function controlTurn(nonce, commands) {
-  const body = commands.map((c) => JSON.stringify(c)).join("\n");
-  return `\`\`\`synod ${nonce}\n${body}\n\`\`\``;
+function fakeRegistry(opts = {}) {
+  let relayTurnCompleteFn = null;
+  const calls = { add: [], remove: [], list: 0 };
+  return {
+    add: (from, to) => { calls.add.push({ from, to }); },
+    remove: (from, to) => { calls.remove.push({ from, to }); },
+    list: () => { calls.list++; return opts.listResult || []; },
+    onTurnComplete: (label, text) => {
+      if (relayTurnCompleteFn) return relayTurnCompleteFn(label, text);
+    },
+    _setTurnComplete(fn) { relayTurnCompleteFn = fn; },
+    calls,
+  };
 }
 
-function proseTurn(nonce, commands, prose = "Task result.") {
-  return `${prose}\n\n${controlTurn(nonce, commands)}`;
+/** Fake dispatch that records calls and returns configured results. */
+function fakeDispatch(resultMap = {}) {
+  const calls = [];
+  const fn = async (line, opts = {}) => {
+    calls.push({ line, ...opts });
+    const key = `${line}|${opts.depth ?? 0}`;
+    if (resultMap[key]) return resultMap[key];
+    return { ok: true };
+  };
+  fn.calls = calls;
+  fn._resultMap = resultMap; // for tests to inspect mapped results
+  return fn;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Unit: createControlChannel — basic contract + error resilience
-// ═══════════════════════════════════════════════════════════════════════
-
-describe("createControlChannel", () => {
-
-  // ── Nonce ──────────────────────────────────────────────────────────
-
-  it("generates a unique nonce per instance", () => {
-    const a = createControlChannel({ dispatch: async () => {} });
-    const b = createControlChannel({ dispatch: async () => {} });
-    assert.ok(a.nonce);
-    assert.ok(b.nonce);
-    assert.notStrictEqual(a.nonce, b.nonce);
-    assert.ok(/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(a.nonce));
-  });
-
-  it("uses provided nonce", () => {
-    const ch = createControlChannel({ dispatch: async () => {}, nonce: "my-nonce" });
-    assert.strictEqual(ch.nonce, "my-nonce");
-  });
-
-  // ── Basic extract + dispatch ───────────────────────────────────────
-
-  it("extracts and dispatches commands with correct nonce", async () => {
-    const dispatched = [];
-    const dispatch = async (cmds) => { dispatched.push(...cmds); return { dispatched: [], rejected: [] }; };
-    const ch = createControlChannel({ dispatch, nonce: "nc" });
-
-    ch.onTurnComplete("x", controlTurn("nc", [{ cmd: "send", to: "y", msg: "hi" }]));
-    await new Promise((r) => setTimeout(r, 0));
-
-    assert.strictEqual(dispatched.length, 1);
-    assert.deepStrictEqual(dispatched[0], { cmd: "send", to: "y", msg: "hi" });
-  });
-
-  it("does not dispatch with wrong nonce", async () => {
-    const dispatched = [];
-    const dispatch = async (cmds) => { dispatched.push(...cmds); return { dispatched: [], rejected: [] }; };
-    const ch = createControlChannel({ dispatch, nonce: "real" });
-
-    ch.onTurnComplete("x", controlTurn("wrong", [{ cmd: "send", to: "y", msg: "hi" }]));
-    await new Promise((r) => setTimeout(r, 0));
-    assert.strictEqual(dispatched.length, 0);
-  });
-
-  it("does not dispatch on empty/null turn text", () => {
-    const dispatched = [];
-    const dispatch = async (cmds) => { dispatched.push(...cmds); return { dispatched: [], rejected: [] }; };
-    const ch = createControlChannel({ dispatch, nonce: "nc" });
-
-    assert.doesNotThrow(() => ch.onTurnComplete("x", ""));
-    assert.doesNotThrow(() => ch.onTurnComplete("x", null));
-    assert.doesNotThrow(() => ch.onTurnComplete("x", undefined));
-    assert.strictEqual(dispatched.length, 0);
-  });
-
-  it("does not dispatch from unclosed fence", async () => {
-    const dispatched = [];
-    const dispatch = async (cmds) => { dispatched.push(...cmds); return { dispatched: [], rejected: [] }; };
-    const ch = createControlChannel({ dispatch, nonce: "nc" });
-
-    ch.onTurnComplete("x", '```synod nc\n{"cmd":"send","to":"y","msg":"hi"}\nno closer');
-    await new Promise((r) => setTimeout(r, 0));
-    assert.strictEqual(dispatched.length, 0);
-  });
-
-  it("reports parse warnings via onWarnings", async () => {
-    const dispatched = [];
-    const dispatch = async (cmds) => { dispatched.push(...cmds); return { dispatched: [], rejected: [] }; };
-    const warns = [];
-    const ch = createControlChannel({
-      dispatch, nonce: "nc",
-      onWarnings: (label, w) => warns.push({ label, w }),
-    });
-
-    const text = [
-      '```synod nc',
-      '{"cmd":"send","to":"y","msg":"ok"}',
-      '{bad json}',
-      '```',
-    ].join("\n");
-    ch.onTurnComplete("s1", text);
-    await new Promise((r) => setTimeout(r, 0));
-
-    assert.strictEqual(dispatched.length, 1);
-    assert.strictEqual(warns.length, 1);
-    assert.strictEqual(warns[0].label, "s1");
-    assert.ok(warns[0].w[0].reason.includes("invalid JSON") || warns[0].w[0].reason.includes("JSON"));
-  });
-
-  // ── Error resilience ───────────────────────────────────────────────
-
-  it("onTurnComplete does not throw when dispatch throws synchronously", () => {
-    const dispatch = () => { throw new Error("sync boom"); };
-    const ch = createControlChannel({ dispatch, nonce: "nc" });
-
-    assert.doesNotThrow(() =>
-      ch.onTurnComplete("x", controlTurn("nc", [{ cmd: "open", agent: "omp", task: "x" }]))
-    );
-  });
-
-  it("onTurnComplete swallows rejecting promise (no unhandledRejection)", async () => {
-    const dispatch = async () => { throw new Error("async boom"); };
-    const ch = createControlChannel({ dispatch, nonce: "nc" });
-
-    assert.doesNotThrow(() =>
-      ch.onTurnComplete("x", controlTurn("nc", [{ cmd: "open", agent: "omp", task: "x" }]))
-    );
-    await new Promise((r) => setTimeout(r, 10));
-    // No unhandledRejection → test passes
-  });
-
-  it("onTurnComplete returns immediately when dispatch never resolves", () => {
-    const dispatch = () => new Promise(() => {}); // never settles
-    const ch = createControlChannel({ dispatch, nonce: "nc" });
-
-    const start = Date.now();
-    ch.onTurnComplete("x", controlTurn("nc", [{ cmd: "open", agent: "omp", task: "x" }]));
-    const elapsed = Date.now() - start;
-
-    assert.ok(elapsed < 5, `onTurnComplete must return immediately, took ${elapsed}ms`);
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// Turn granularity — true integration via createSessionManager
-// ═══════════════════════════════════════════════════════════════════════
-
-describe("turn granularity (true integration)", () => {
-
-  it("bare delta / event / status:idle do NOT trigger control dispatch", async () => {
-    const nonce = "nc-gran";
-    const dispatched = [];
-    const dispatch = async (cmds) => { dispatched.push(...cmds); return { dispatched: [], rejected: [] }; };
-    const channel = createControlChannel({ dispatch, nonce });
-
-    const openBackend = makeOpenBackend({ deltas: ["hello"], text: "hello" });
-    const sm = createSessionManager({
-      openBackend, stdout: captureStream(), stderr: captureStream(),
-      report: FAKE_REPORT, cwd: "/test", defaults: {},
-      onTurnComplete: (label, result) => channel.onTurnComplete(label, result.text),
-    });
-
-    await sm.open({ agent: "omp" });
-    const session = sm._sessions.get("omp#1").session;
-
-    // Bare deltas — should not trigger dispatch
-    session.emit("delta", "```synod ");
-    session.emit("delta", `${nonce}`);
-    session.emit("delta", '\n{"cmd":"open","agent":"codex","task":"x"}\n```');
-    await new Promise((r) => setTimeout(r, 0));
-    assert.strictEqual(dispatched.length, 0, "bare deltas must not trigger dispatch");
-
-    // message_update event — should not trigger
-    session.emit("event", { type: "message_update", message: { type: "text_delta", delta: "more" } });
-    await new Promise((r) => setTimeout(r, 0));
-    assert.strictEqual(dispatched.length, 0, "events must not trigger dispatch");
-
-    // Bare status:idle — should not trigger
-    session.emit("status", { status: "idle", isStreaming: false });
-    await new Promise((r) => setTimeout(r, 0));
-    assert.strictEqual(dispatched.length, 0, "bare status:idle must not trigger dispatch");
-  });
-
-  it("real sm.enqueue turn with control fence dispatches exactly once", async () => {
-    const nonce = "nc-real-turn";
-    const dispatched = [];
-    const dispatch = async (cmds) => { dispatched.push(...cmds); return { dispatched: [], rejected: [] }; };
-    const channel = createControlChannel({ dispatch, nonce });
-
-    const fence = controlTurn(nonce, [{ cmd: "send", to: "codex#1", msg: "ping" }]);
-    const openBackend = makeOpenBackend({ deltas: [fence], text: fence });
-    const sm = createSessionManager({
-      openBackend, stdout: captureStream(), stderr: captureStream(),
-      report: FAKE_REPORT, cwd: "/test", defaults: {},
-      onTurnComplete: (label, result) => channel.onTurnComplete(label, result.text),
-    });
-
-    await sm.open({ agent: "omp" });
-
-    // Real turn via sm.enqueue → sendQueue → session.send() → result()
-    await sm.enqueue({ target: "omp#1", msg: "trigger" });
-
-    assert.strictEqual(dispatched.length, 1,
-      "real turn completion should trigger dispatch exactly once");
-    assert.deepStrictEqual(dispatched[0], { cmd: "send", to: "codex#1", msg: "ping" });
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// Relay + Control combo — true integration via real sm + registry + channel
-// ═══════════════════════════════════════════════════════════════════════
-
-describe("relay + control combo (true integration)", () => {
-
-  it("A→B relay + control fence in A's turn: B receives text, control dispatches", async () => {
-    const nonce = "nc-combo-int";
-
-    // ── Registry with placeholder enqueue ────────────────────────────
-    let smRef = null;
-    const relayFwd = [];
-    const registry = createRelayRegistry((to, msg) => {
-      relayFwd.push({ to, msg });
-      if (smRef) smRef.enqueue({ target: to, msg });
-    });
-
-    // ── Control channel ──────────────────────────────────────────────
-    const dispatched = [];
-    const dispatch = async (cmds) => { dispatched.push(...cmds); return { dispatched: [], rejected: [] }; };
-    const channel = createControlChannel({ dispatch, nonce });
-
-    // ── Compose: relay first, then control (cli.mjs pattern) ────────
-    function composedOnTurnComplete(label, result) {
-      registry.onTurnComplete(label, result.text);
-      channel.onTurnComplete(label, result.text);
-    }
-
-    // ── Build sm with two fake backends ──────────────────────────────
-    const openBackendA = makeOpenBackend({
-      deltas: [proseTurn(nonce, [{ cmd: "send", to: "codex#1", msg: "control-msg" }])],
-    });
-    const openBackendB = makeOpenBackend({ deltas: ["ok"], text: "ok" });
-    const openBackend = (opts) => opts.agent === "omp" ? openBackendA(opts) : openBackendB(opts);
-
-    const sm = createSessionManager({
-      openBackend, stdout: captureStream(), stderr: captureStream(),
-      report: FAKE_REPORT, cwd: "/test", defaults: {},
-      onTurnComplete: composedOnTurnComplete,
-    });
-    smRef = sm;
-
-    await sm.open({ agent: "omp" });   // A = omp#1
-    await sm.open({ agent: "codex", announce: false }); // B = codex#1
-    registry.add("omp#1", "codex#1");
-
-    // ── Trigger A's real turn ───────────────────────────────────────
-    await sm.enqueue({ target: "omp#1", msg: "trigger A" });
-    await sm.drainAll();
-
-    // ── Assert relay forwarded to B ─────────────────────────────────
-    assert.strictEqual(relayFwd.length, 1, "relay should forward exactly once");
-    assert.ok(relayFwd[0].msg.includes("Task result."),
-      "B should receive A's complete turn text");
-    assert.ok(relayFwd[0].msg.includes("[relay from omp#1]"),
-      "B's message should have source attribution");
-
-    // ── Assert control dispatched ───────────────────────────────────
-    assert.strictEqual(dispatched.length, 1,
-      "control should dispatch exactly once");
-    assert.deepStrictEqual(dispatched[0], {
-      cmd: "send", to: "codex#1", msg: "control-msg",
-    });
-
-    // ── Cross-interference assertions ───────────────────────────────
-    assert.strictEqual(relayFwd.length, 1,
-      "control dispatch must not trigger additional relay forwards");
-    assert.ok(relayFwd[0].msg.includes("```synod"),
-      "relay should forward raw control fence text (relay doesn't filter it)");
-  });
-
-  it("composed callback: relay called before control", async () => {
-    const callOrder = [];
-    const registry = { onTurnComplete: () => callOrder.push("relay") };
-    const dispatch = async () => { callOrder.push("control"); return { dispatched: [], rejected: [] }; };
-    const channel = createControlChannel({ dispatch, nonce: "nc" });
-
-    function composed(label, result) {
-      registry.onTurnComplete(label, result.text);
-      channel.onTurnComplete(label, result.text);
-    }
-
-    composed("x", { text: controlTurn("nc", [{ cmd: "send", to: "y", msg: "hi" }]) });
-    await new Promise((r) => setTimeout(r, 0));
-
-    assert.deepStrictEqual(callOrder, ["relay", "control"],
-      "relay must fire before control dispatch");
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// Output routing — triggered through real sm.enqueue
-// ═══════════════════════════════════════════════════════════════════════
-
-describe("output routing (true trigger via sm.enqueue)", () => {
-
-  it("parent turn with control open → child output goes to stdout, parent not auto-fed", async () => {
-    const nonce = "nc-route";
-    const logs = [];
-
-    const openBackend = (opts) => fakeOpenBackend({
-      ...opts,
-      deltas: opts.agent === "codex"
-        ? ["child result"]
-        : [controlTurn(nonce, [{ cmd: "open", agent: "codex", task: "child task" }])],
-      text: opts.agent === "codex"
-        ? "child result"
-        : controlTurn(nonce, [{ cmd: "open", agent: "codex", task: "child task" }]),
-    });
-
-    // ── Two-phase: placeholder → real dispatch ─────────────────────
-    let _chRef = null;
-    const out = captureStream();
-    const err = captureStream();
-
-    const sm = createSessionManager({
-      openBackend,
-      stdout: out, stderr: err,
-      report: FAKE_REPORT, cwd: "/test", defaults: {},
-      onTurnComplete: (label, result) => {
-        if (_chRef) _chRef.onTurnComplete(label, result.text);
-      },
-    });
-
-    const dispatch = createControlDispatch({
-      manager: sm,
-      guardrails: { maxSessions: 10, maxDepth: 3, allowWrite: false },
-      log: (e) => logs.push(e),
-    });
-    _chRef = createControlChannel({ dispatch, nonce });
-
-    // Open parent
-    await sm.open({ agent: "omp" }); // omp#1
-
-    // Trigger parent's real turn — it outputs a control fence with open command
-    await sm.enqueue({ target: "omp#1", msg: "trigger parent" });
-
-    // Dispatch is fire-and-forget from onTurnComplete.  Wait for it to finish
-    // opening the child session before draining.
-    await new Promise((r) => setTimeout(r, 30));
-    // Drain — child gets opened, enqueued, and completes
-    await sm.drainAll();
-    sm.flushAll();
-
-    // ── Assert: child session was created ───────────────────────────
-    assert.ok(sm._sessions.has("codex#1"), "child session should be open");
-
-    // ── Assert: child output went to stdout (human) ─────────────────
-    assert.ok(out.buf.includes("child result"),
-      `child output should appear on stdout, got: "${out.buf}"`);
-
-    // ── Assert: parent not auto-fed child output ────────────────────
-    const parentSession = sm._sessions.get("omp#1").session;
-    const feedback = parentSession._sentMessages.filter((m) =>
-      m.message && m.message.includes("child result"));
-    assert.strictEqual(feedback.length, 0,
-      `parent should not receive child output automatically, got ${feedback.length} feedback messages`);
-
-    sm.closeAll();
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// wireControl helper — CLI integration + default guardrail lock
-// ═══════════════════════════════════════════════════════════════════════
-
-describe("wireControl helper", () => {
-
-  it("returns composed onTurnComplete + nonce; relay fires before control", async () => {
+// ── Tests ────────────────────────────────────────────────────────────────
+
+describe("wireControl onTurnComplete", () => {
+  it("turn without fences → dispatch not called", async () => {
+    const sm = fakeSm();
+    const registry = fakeRegistry();
     const stderr = captureStream();
-    const relayFwd = [];
-
-    let _sm = null;
-    const registry = createRelayRegistry((to, msg) => {
-      relayFwd.push({ to, msg });
-      if (_sm) _sm.enqueue({ target: to, msg });
-    });
-
-    let _cb = null;
-    const sm = createSessionManager({
-      openBackend: makeOpenBackend({ deltas: ["ok"], text: "ok" }),
-      stdout: captureStream(), stderr,
-      report: FAKE_REPORT, cwd: "/test", defaults: {},
-      onTurnComplete: (label, result) => { if (_cb) _cb(label, result); },
-    });
-    _sm = sm;
-
-    const { onTurnComplete, nonce } = wireControl({ sm, registry, stderr });
-    _cb = onTurnComplete;
-
-    // Verify nonce is returned and looks like a UUID
-    assert.ok(nonce, "wireControl should return nonce");
-    assert.ok(/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(nonce));
-
-    // Open sessions and add relay
-    await sm.open({ agent: "omp" });
-    await sm.open({ agent: "codex", announce: false });
-    registry.add("omp#1", "codex#1");
-
-    // Build a turn text with a control fence using the real nonce
-    const turnText = controlTurn(nonce, [{ cmd: "send", to: "codex#1", msg: "ping" }]);
-
-    // Call the composed callback (simulating what sm does at turn completion)
-    onTurnComplete("omp#1", { text: turnText });
-    await new Promise((r) => setTimeout(r, 0));
-
-    // Relay forwarded
-    assert.strictEqual(relayFwd.length, 1, "relay should forward");
-    assert.ok(relayFwd[0].msg.includes("[relay from omp#1]"));
-
-    sm.closeAll();
+    const dispatch = fakeDispatch();
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    await onTurnComplete("omp#1", { text: "hello world" });
+    assert.strictEqual(dispatch.calls.length, 0);
+    assert.strictEqual(stderr.buf, "");
   });
 
-  it("default guardrails reject write:true open command", async () => {
+  it("turn with a fence line → dispatch called with source:agent-fence", async () => {
+    const sm = fakeSm();
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch();
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    const text = "```synod\n/open --agent omp\n```";
+    await onTurnComplete("omp#1", { text });
+    await new Promise(r => setImmediate(r));
+    assert.strictEqual(dispatch.calls.length, 1);
+    assert.strictEqual(dispatch.calls[0].line, "/open --agent omp");
+    assert.strictEqual(dispatch.calls[0].source, "agent-fence");
+  });
+
+  it("multiple fence lines → dispatch called for each, in order", async () => {
+    const sm = fakeSm();
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch();
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    const text = "```synod\n/open --agent omp\n@omp#2 hello\n```";
+    await onTurnComplete("omp#1", { text });
+    await new Promise(r => setImmediate(r));
+    assert.strictEqual(dispatch.calls.length, 2);
+    assert.strictEqual(dispatch.calls[0].line, "/open --agent omp");
+  });
+
+  it("fence warnings route to stderr", async () => {
+    const sm = fakeSm();
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch();
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    // Body first line is prose → R1 gate fails → warning
+    const text = "```synod\nnot a command\n```";
+    await onTurnComplete("omp#1", { text });
+    assert.ok(stderr.buf.includes("[control warn]"), `stderr should have warn, got: ${stderr.buf}`);
+    assert.strictEqual(dispatch.calls.length, 0); // R1 blocked
+  });
+});
+
+describe("wireControl depth map", () => {
+  it("child of depth 0 gets depth 1 — proven by second round", async () => {
+    // Round 1: omp#1 (depth 0) opens codex#1 → wire records depthMap["codex#1"] = 1
+    // Round 2: codex#1 produces a fence → dispatch receives depth=1 (not 0)
+    const sm = fakeSm({
+      _sessions: [["omp#1", {}], ["codex#1", {}]],
+    });
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch({
+      "/open --agent codex|0": { ok: true, label: "codex#1" },
+      "/open --agent omp|1":   { ok: true, label: "omp#2" },
+    });
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+
+    // Round 1: omp#1 → codex#1 (depth 0 → label stored, child depth 1)
+    await onTurnComplete("omp#1", { text: "```synod\n/open --agent codex\n```" });
+    await new Promise(r => setImmediate(r));
+    assert.strictEqual(dispatch.calls.length, 1);
+    assert.strictEqual(dispatch.calls[0].depth, 0, "round 1 depth should be 0");
+
+    dispatch.calls.length = 0;
+    // Round 2: codex#1 → dispatch should receive depth=1 (not 0)
+    await onTurnComplete("codex#1", { text: "```synod\n/open --agent omp\n```" });
+    await new Promise(r => setImmediate(r));
+    assert.strictEqual(dispatch.calls.length, 1);
+    assert.strictEqual(dispatch.calls[0].depth, 1, "codex#1 child should be depth 1");
+  });
+
+  it("grandchild blocked by maxDepth", async () => {
+    // Setup: omp#1 (default session) is at depth 0.
+    // Turn 1: omp#1 produces a fence → opens codex#1 (depth 1).
+    // Turn 2: codex#1 produces a fence → opens omp#2 (depth 2).
+    // Turn 3: omp#2 produces a fence → tries to open again → blocked.
+    const sm = fakeSm({
+      _sessions: [["omp#1", {}], ["codex#1", {}], ["omp#2", {}]],
+    });
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch({
+      "/open --agent codex|0": { ok: true, label: "codex#1" },
+      "/open --agent omp|1":   { ok: true, label: "omp#2" },
+      "/open --agent omp|2":   { ok: false, reason: "max depth reached" },
+    });
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+
+    // Turn 1: omp#1 (depth 0) → opens codex#1 (depth 1 stored)
+    await onTurnComplete("omp#1", { text: "```synod\n/open --agent codex\n```" });
+    await new Promise(r => setImmediate(r));
+    assert.strictEqual(dispatch.calls.length, 1);
+    assert.strictEqual(dispatch.calls[0].depth, 0);
+    assert.strictEqual(dispatch.calls[0].line, "/open --agent codex");
+
+    dispatch.calls.length = 0;
+    // Turn 2: codex#1 (depth 1) → opens omp#2 (depth 2 stored)
+    await onTurnComplete("codex#1", { text: "```synod\n/open --agent omp\n```" });
+    await new Promise(r => setImmediate(r));
+    assert.strictEqual(dispatch.calls.length, 1);
+    assert.strictEqual(dispatch.calls[0].depth, 1);
+
+    dispatch.calls.length = 0;
+    // Turn 3: omp#2 (depth 2) → tries to open again → blocked
+    await onTurnComplete("omp#2", { text: "```synod\n/open --agent omp\n```" });
+    await new Promise(r => setImmediate(r));
+    assert.strictEqual(dispatch.calls.length, 1);
+    assert.strictEqual(dispatch.calls[0].depth, 2);
+    // dispatch returned {ok:false}, wire should log warning
+    assert.ok(stderr.buf.includes("[control warn]"), `stderr: ${stderr.buf}`);
+  });
+});
+
+describe("wireControl relay+control compositing", () => {
+  it("relay runs before control", async () => {
+    const sm = fakeSm({
+      _sessions: [["omp#1", {}], ["codex#1", {}]],
+      currentLabel: "omp#1",
+    });
+    const registry = fakeRegistry();
     const stderr = captureStream();
 
-    let _sm = null;
-    const registry = createRelayRegistry(() => {});
-
-    let _cb = null;
-    const sm = createSessionManager({
-      openBackend: makeOpenBackend({ deltas: ["ok"], text: "ok" }),
-      stdout: captureStream(), stderr,
-      report: FAKE_REPORT, cwd: "/test", defaults: {},
-      onTurnComplete: (label, result) => { if (_cb) _cb(label, result); },
+    const order = [];
+    const relayCalls = [];
+    registry._setTurnComplete((label, text) => {
+      order.push("relay");
+      relayCalls.push({ label, text });
+      sm.setCurrentLabel("codex#1");
     });
-    _sm = sm;
 
-    // Use wireControl with a known nonce for testability
-    const nonce = "test-write-reject";
-    const { onTurnComplete } = wireControl({ sm, registry, stderr, nonce });
-    _cb = onTurnComplete;
-
-    await sm.open({ agent: "omp" });
-
-    // Build a control fence with write:true — should be rejected by default allowWrite:false
-    const turnText = controlTurn(nonce, [
-      { cmd: "open", agent: "codex", task: "write stuff", write: true },
-    ]);
-
-    onTurnComplete("omp#1", { text: turnText });
-    await new Promise((r) => setTimeout(r, 10));
-
-    // Assert: stderr contains the rejection
-    assert.ok(stderr.buf.includes("[control warn]"),
-      `stderr should contain rejection, got: "${stderr.buf}"`);
-    assert.ok(stderr.buf.includes("allowWrite"),
-      `stderr should mention allowWrite, got: "${stderr.buf}"`);
-
-    // Assert: no new session was opened
-    assert.strictEqual(sm._sessions.size, 1, "write session should not be opened");
-
-    sm.closeAll();
-  });
-
-  it("wireControl returns a callable onTurnComplete that does not throw", () => {
-    const sm = {
-      open: async () => "test#1",
-      enqueue: () => Promise.resolve(),
-      _sessions: new Map(),
+    // Wrap dispatch to record order
+    const baseDispatch = fakeDispatch();
+    const dispatch = async (line, opts) => {
+      order.push("control");
+      return baseDispatch(line, opts);
     };
-    const registry = createRelayRegistry(() => {});
+
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    const text = "```synod\n@codex#1 hello\n```";
+    await onTurnComplete("omp#1", { text });
+    await new Promise(r => setImmediate(r)); // wait for fire-and-forget
+
+    assert.deepStrictEqual(order, ["relay", "control"], "relay must run before control");
+  });
+
+  it("both relay and control effects visible", async () => {
+    const sm = fakeSm({
+      _sessions: [["omp#1", {}], ["codex#1", {}]],
+    });
+    const registry = fakeRegistry();
     const stderr = captureStream();
+    const dispatch = fakeDispatch();
+    const relayCalls = [];
+    registry._setTurnComplete((label, text) => {
+      relayCalls.push({ label, text });
+    });
 
-    const { onTurnComplete, nonce } = wireControl({ sm, registry, stderr });
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    const text = "```synod\n/open --agent codex\n```";
+    await onTurnComplete("omp#1", { text });
 
-    assert.ok(nonce);
+    assert.strictEqual(relayCalls.length, 1, "relay should be called");
+    assert.strictEqual(dispatch.calls.length, 1, "dispatch should be called");
+  });
+});
 
-    assert.doesNotThrow(() =>
-      onTurnComplete("test#1", { text: "some turn output" })
-    );
-    assert.doesNotThrow(() =>
-      onTurnComplete("test#1", { text: null })
-    );
+describe("wireControl fire-and-forget", () => {
+  it("async reject in dispatch does not crash onTurnComplete", async () => {
+    const sm = fakeSm();
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const throwingDispatch = async () => { throw new Error("boom"); };
+    throwingDispatch.calls = [];
+
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch: throwingDispatch });
+    const text = "```synod\n/open --agent omp\n```";
+    // Must not throw
+    await onTurnComplete("omp#1", { text });
+    // No crash = pass
+  });
+
+  it("sync throw in dispatch does not crash onTurnComplete", async () => {
+    const sm = fakeSm();
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const throwingDispatch = () => { throw new Error("sync boom"); };
+    throwingDispatch.calls = [];
+
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch: throwingDispatch });
+    const text = "```synod\n/open --agent omp\n```";
+    // Must not throw
+    await onTurnComplete("omp#1", { text });
+  });
+});
+
+describe("wireControl empty/rejected paths", () => {
+  it("empty lines from fence → silent", async () => {
+    const sm = fakeSm();
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch();
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    // just an opener+closer with no body lines
+    const text = "```synod\n```";
+    await onTurnComplete("omp#1", { text });
+    assert.strictEqual(dispatch.calls.length, 0);
+    assert.strictEqual(stderr.buf, "");
+  });
+
+  it("dispatch returns {ok:false} → reason logged to stderr", async () => {
+    const sm = fakeSm();
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch({
+      "/open --write|0": { ok: false, reason: "write denied" },
+    });
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    const text = "```synod\n/open --write\n```";
+    await onTurnComplete("omp#1", { text });
+    assert.ok(stderr.buf.includes("[control warn]"), `stderr should have warn: ${stderr.buf}`);
+    assert.ok(stderr.buf.includes("write denied"), `stderr should include reason: ${stderr.buf}`);
+  });
+
+  it("result.text = null does not throw", async () => {
+    const sm = fakeSm();
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch();
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    await assert.doesNotReject(() => onTurnComplete("omp#1", { text: null }));
+    assert.strictEqual(dispatch.calls.length, 0);
+    assert.strictEqual(stderr.buf, "");
+  });
+
+  it("result.text = undefined does not throw", async () => {
+    const sm = fakeSm();
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch();
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    await assert.doesNotReject(() => onTurnComplete("omp#1", { text: undefined }));
+    assert.strictEqual(dispatch.calls.length, 0);
+    assert.strictEqual(stderr.buf, "");
+  });
+
+  it("result = {} (no text key) does not throw", async () => {
+    const sm = fakeSm();
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch();
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    await assert.doesNotReject(() => onTurnComplete("omp#1", {}));
+    assert.strictEqual(dispatch.calls.length, 0);
+    assert.strictEqual(stderr.buf, "");
   });
 });
