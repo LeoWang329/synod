@@ -384,6 +384,7 @@ class OmpSession extends EventEmitter {
     this.agent = "omp";
     this.cwd = assertCwd(options.cwd);
     this.write = Boolean(options.write);
+    this.mesh = Boolean(options.mesh);
     this.model = sanitizeAgentArg(options.model || null, "model");
     this.effort = sanitizeAgentArg(options.effort || null, "effort");
     this.createdAt = nowIso();
@@ -796,6 +797,7 @@ class CodexSession extends EventEmitter {
     this.agent = "codex";
     this.cwd = assertCwd(options.cwd);
     this.write = Boolean(options.write);
+    this.mesh = Boolean(options.mesh);
     this.model = sanitizeAgentArg(options.model || null, "model");
     this.effort = sanitizeAgentArg(options.effort || null, "effort");
     this.createdAt = nowIso();
@@ -1455,12 +1457,13 @@ export async function openBackend({
   write = false,
   model,
   effort,
+  mesh = false,
   spawnImpl,
 }) {
   ensureDirs();
   assertAgent(agent);
   const effectiveSpawn = spawnImpl || _defaultSpawn;
-  const options = { cwd, write, model, effort, spawn: effectiveSpawn };
+  const options = { cwd, write, model, effort, mesh, spawn: effectiveSpawn };
   const session =
     agent === "omp"
       ? new OmpSession(options)

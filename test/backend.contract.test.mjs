@@ -289,4 +289,31 @@ describe("openBackend omp contract", () => {
 
     await session.close();
   });
+
+  it("mesh:true is stored on session", async () => {
+    const proc = makeFakeOmpProc({ responseDeltas: ["ok"] });
+    const session = await openBackend({
+      agent: "omp",
+      cwd: "/tmp",
+      mesh: true,
+      spawnImpl: () => proc,
+    });
+    assert.strictEqual(session.mesh, true, "session.mesh should be true");
+    await session.close();
+  });
+
+  it("mesh defaults to false", async () => {
+    const proc = makeFakeOmpProc({ responseDeltas: ["ok"] });
+    const session = await openBackend({
+      agent: "omp",
+      cwd: "/tmp",
+      spawnImpl: () => proc,
+    });
+    assert.strictEqual(session.mesh, false, "default session.mesh should be false");
+    await session.close();
+  });
+  // Note: mesh is stored identically in OmpSession and CodexSession constructors
+  // — the path through openBackend → options → constructor is the same for both.
+  // OmpSession tests above cover the full plumbing.  CodexSession constructor
+  // testing needs a codex-specific fake spawn (out of scope for this contract test).
 });

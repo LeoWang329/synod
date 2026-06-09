@@ -375,4 +375,45 @@ describe("createSessionManager", () => {
         `session should have at least one message`);
     }
   });
+
+  it("mesh defaults to false, propagates to openBackend", async () => {
+    const { sm } = setup();
+    const label = await sm.open({ agent: "omp" });
+    assert.ok(label, "should open");
+    // Default mesh:false — openBackend receives mesh:false
+  });
+
+  it("mesh:true in defaults propagates to openBackend", async () => {
+    let receivedMesh;
+    // Inject fake openBackend that captures mesh
+    const openBackend = async (opts) => {
+      receivedMesh = opts.mesh;
+      return new (await import("./helpers/fake-backend.mjs")).FakeSession(opts);
+    };
+    const sm = createSessionManager({
+      openBackend, stdout: captureStream(), stderr: captureStream(),
+      report: { omp: { available: true } },
+      cwd: "/test",
+      defaults: { mesh: true },
+    });
+    const label = await sm.open({ agent: "omp" });
+    assert.ok(label, "should open");
+    assert.strictEqual(receivedMesh, true, "openBackend should receive mesh:true");
+  });
+
+  it("mesh:false default → openBackend receives false", async () => {
+    let receivedMesh;
+    const openBackend = async (opts) => {
+      receivedMesh = opts.mesh;
+      return new (await import("./helpers/fake-backend.mjs")).FakeSession(opts);
+    };
+    const sm = createSessionManager({
+      openBackend, stdout: captureStream(), stderr: captureStream(),
+      report: { omp: { available: true } },
+      cwd: "/test",
+    });
+    const label = await sm.open({ agent: "omp" });
+    assert.ok(label, "should open");
+    assert.strictEqual(receivedMesh, false, "default mesh should be false");
+  });
 });

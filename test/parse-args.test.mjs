@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { parseArgs, AGENTS } from "../src/cli.mjs";
+import { parseArgs, AGENTS, meshFromEnv } from "../src/cli.mjs";
 
 describe("parseArgs", () => {
   it("defaults: no args", () => {
@@ -47,6 +47,17 @@ describe("parseArgs", () => {
     const out = parseArgs(["--write"]);
     assert.strictEqual(out.write, true);
     assert.strictEqual(out._unknown, null);
+  });
+
+  it("--mesh", () => {
+    const out = parseArgs(["--mesh"]);
+    assert.strictEqual(out.mesh, true);
+    assert.strictEqual(out._unknown, null);
+  });
+
+  it("--mesh default false", () => {
+    const out = parseArgs([]);
+    assert.strictEqual(out.mesh, false);
   });
 
   it("--task omp:hello", () => {
@@ -103,5 +114,39 @@ describe("parseArgs", () => {
     const out = parseArgs(["-h"]);
     assert.strictEqual(out._help, true);
     assert.strictEqual(out._unknown, null);
+  });
+});
+
+describe("meshFromEnv", () => {
+  it('"1" → true', () => {
+    assert.strictEqual(meshFromEnv({ SYNOD_MESH: "1" }), true);
+  });
+
+  it('"true" → true', () => {
+    assert.strictEqual(meshFromEnv({ SYNOD_MESH: "true" }), true);
+  });
+
+  it('"0" → false', () => {
+    assert.strictEqual(meshFromEnv({ SYNOD_MESH: "0" }), false);
+  });
+
+  it('"false" → false', () => {
+    assert.strictEqual(meshFromEnv({ SYNOD_MESH: "false" }), false);
+  });
+
+  it('"" → false', () => {
+    assert.strictEqual(meshFromEnv({ SYNOD_MESH: "" }), false);
+  });
+
+  it("no key → false", () => {
+    assert.strictEqual(meshFromEnv({}), false);
+  });
+
+  it("undefined value → false", () => {
+    assert.strictEqual(meshFromEnv({ SYNOD_MESH: undefined }), false);
+  });
+
+  it("arbitrary string → false", () => {
+    assert.strictEqual(meshFromEnv({ SYNOD_MESH: "yes" }), false);
   });
 });

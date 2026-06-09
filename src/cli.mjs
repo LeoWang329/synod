@@ -24,6 +24,7 @@ function parseArgs(argv) {
     model: undefined,
     effort: undefined,
     write: false,
+    mesh: false,
     tasks: [],
     _unknown: null,
   };
@@ -64,6 +65,9 @@ function parseArgs(argv) {
       case "--write":
         out.write = true;
         break;
+      case "--mesh":
+        out.mesh = true;
+        break;
       case "--task": {
         const v = argv[++i];
         if (!v || v.startsWith("--")) {
@@ -100,6 +104,16 @@ function parseArgs(argv) {
   return out;
 }
 
+/**
+ * Read mesh flag from environment.  Only "1" and "true" are truthy.
+ * @param {object} env — typically process.env or an overridden map
+ * @returns {boolean}
+ */
+export function meshFromEnv(env) {
+  const v = env.SYNOD_MESH;
+  return v === "1" || v === "true";
+}
+
 function printHelp(stdout = process.stdout) {
   stdout.write(
     [
@@ -115,6 +129,7 @@ function printHelp(stdout = process.stdout) {
       "  --effort <E>          Reasoning effort (omp, e.g. high/xhigh)",
       "  --write               Allow file writes (default: read-only)",
       "  --task <agent>:<msg>  Run task non-interactively (repeatable)",
+      "  --mesh                Inject orchestration skill into spawned agents (default: off)",
       "  -h, --help            Show this help",
       "",
       "REPL commands:",
@@ -184,7 +199,7 @@ async function runTasks(tasks, report, baseOpts, { openBackend, stdout = process
   const sm = createSessionManager({
     openBackend, stdout, stderr, report,
     cwd: baseOpts.cwd,
-    defaults: { model: baseOpts.model, effort: baseOpts.effort, write: baseOpts.write },
+    defaults: { model: baseOpts.model, effort: baseOpts.effort, write: baseOpts.write, mesh: baseOpts.mesh },
     onIdle: () => {}, // no prompt redraw in non-interactive mode
   });
 
@@ -255,6 +270,7 @@ async function main({
   stdout = process.stdout,
   stderr = process.stderr,
   argv = process.argv,
+  env = process.env,
 } = {}) {
   const args = parseArgs(argv.slice(2));
   if (args._help) {
@@ -269,10 +285,11 @@ async function main({
 
   const report = doctor();
   const cwd = path.resolve(process.cwd());
+  const mesh = args.mesh || meshFromEnv(env);
 
   // ── Non-interactive ────────────────────────────────────────────────
   if (args.tasks.length > 0) {
-    return runTasks(args.tasks, report, { model: args.model, effort: args.effort, write: args.write, cwd }, { openBackend, stdout, stderr });
+    return runTasks(args.tasks, report, { model: args.model, effort: args.effort, write: args.write, mesh, cwd }, { openBackend, stdout, stderr });
   }
 
   // ── Interactive mode ───────────────────────────────────────────────
@@ -294,7 +311,7 @@ async function main({
 
   const sm = createSessionManager({
     openBackend, stdout, stderr, report, cwd,
-    defaults: { model: args.model, effort: args.effort, write: args.write },
+    defaults: { model: args.model, effort: args.effort, write: args.write, mesh },
     onIdle: (label) => {
       if (repl && label === sm.currentLabel) repl.writePrompt();
     },
