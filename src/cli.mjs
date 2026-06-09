@@ -255,7 +255,6 @@ async function main({
   stdout = process.stdout,
   stderr = process.stderr,
   argv = process.argv,
-  nonce = process.env.SYNOD_CONTROL_NONCE || undefined,
 } = {}) {
   const args = parseArgs(argv.slice(2));
   if (args._help) {
@@ -306,15 +305,17 @@ async function main({
   });
   _smForRelay = sm;
 
+  // ── REPL dispatch (created before wireControl so it can be passed in) ──
+  const dispatch = createReplDispatch({
+    sm, registry, stdout, stderr,
+    defaultAgent: args.agent,
+    guardrails: { maxSessions: 10, maxDepth: 3, allowWrite: false },
+  });
+
   const { onTurnComplete: composedOnTurnComplete } = wireControl({
-    sm, registry, stderr, nonce,
+    sm, registry, stderr, dispatch,
   });
   _composedOnTurnComplete = composedOnTurnComplete;
-
-  // Wire module-level SIGINT handler to these sessions
-  gSessions = sm._sessions;
-  // ── REPL dispatch ──────────────────────────────────────────────────
-  const dispatch = createReplDispatch({ sm, registry, stdout, stderr, defaultAgent: args.agent });
   repl = createRepl({
     prompt: "> ",
     stdin,

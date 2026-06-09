@@ -142,6 +142,66 @@
 - **Green**:落地删除 + 接线。
 - **DoD**:Tier 1 全绿;nonce/control-dispatch 在 `src/` 绝迹;ledger 净覆盖不降;relay 回归不破。
 
+### A3 覆盖对照 Ledger（"被删断言 → 顶上断言"净覆盖不降）
+
+> **产出时间**:A3 Red 阶段。用途:每删一个旧 nonce/control-* 断言,必须有等价或更强的顶上断言。
+
+#### CommonMark 类（control-marker.test → control-fence.test）
+
+| 旧断言 (control-marker.test) | 处置 | 顶上断言 (control-fence.test) |
+|---|---|---|
+| BOM 首字符归一 `\uFEFF` | **keep** | control-fence: "leading BOM is stripped" + "BOM alone on first line" |
+| CRLF `\r\n` 归一 | **keep** | control-fence: "CRLF line endings are normalized" + "bare CR normalized" |
+| 4+ 反引号 opener | **keep** | control-fence: "4-backtick opener with info 'synod' is a valid control fence" + "5-backtick" |
+| Tilde `~~~` 非控制 | **keep** | control-fence: "tilde is not a control opener" |
+| Outer-fence 优先 | **keep** | control-fence: FP#3 系列（4 条）+ "outer fence type/indent equivalence"（5 条） |
+| Column-0 必需 (indent=0) | **keep** | control-fence: FP#2（3 条）+ "column-0 required for control fence opener" |
+| Indent 0-3 外层优先 | **keep** | control-fence: "indented outer 1-space / 2-space" (2 条) |
+| Unclosed fence → empty | **keep** | control-fence: "unclosed control fence → empty lines" + "partial delta"（2 条） |
+| Dedupe | **keep** | control-fence: "dedup is across fences" + "preserving first occurrence order" |
+| Full-turn-only（分片=空） | **keep** | control-fence: "split/reassembly"（2 条） |
+| 长度追踪（4反引号含3反引号不闭合） | **keep** | control-fence: "outer 4-backtick fence contains 3-backtick — not a closer" + "length tracking recovery scan"（2 条） |
+| 多围栏保序 | **keep** | control-fence: "two control fences → lines from both, ordered" |
+
+#### 护栏类（control-dispatch.test / control-safety.test → agent-fence.test）
+
+| 旧断言 (control-dispatch.test / control-safety.test) | 处置 | 顶上断言 (agent-fence.test) |
+|---|---|---|
+| maxSessions 拒 | **keep** | agent-fence: "maxSessions reached → rejected, sm.open not called" + "maxSessions not reached → allowed" |
+| maxDepth 拒 + 子记 depth+1 | **keep** | agent-fence: "depth >= maxDepth → rejected" + "depth < maxDepth → allowed" + "boundary"（2 条）+ depth+1 data flow（2 条） |
+| allowedAgents 白名单 | **keep** | agent-fence: "allowedAgents whitelist rejects codex when only omp" + "allows omp" |
+| allowedModels 白名单 | **keep** | agent-fence: "allowedModels rejects unrecognized model" + "allows recognized" |
+| allowWrite:false 拒 | **keep** | agent-fence: "allowWrite:false rejects --write" + "allowWrite:true allows" + "default guardrails → allowWrite defaults to false" |
+| Guardrails 不影响 non-open | **keep** | agent-fence: "guardrails only apply to /open"（2 条） |
+
+#### 接线类（旧 control-wire.test → 新 control-wire.test）
+
+| 旧断言 | 处置 | 顶上断言 |
+|---|---|---|
+| onTurnComplete 合成 relay+control | **keep** | control-wire: "relay runs before control" + "both relay and control effects visible" |
+| 围栏命令逐行 dispatch | **keep** | control-wire: "fence line → dispatch called with source:agent-fence" + "multiple fence lines in order" |
+| depth map（sub 记 depth+1） | **keep** | control-wire: "child of depth 0 gets depth 1 on /open" + "grandchild blocked by maxDepth" |
+| Warning 走 stderr | **keep** | control-wire: "fence warnings route to stderr" + "dispatch returns {ok:false} → reason logged" |
+| Fire-and-forget（拒绝不冒泡） | **keep** | control-wire: "async reject does not crash" + "sync throw does not crash" |
+| 空 turn / 无线条 | **keep** | control-wire: "turn without fences → dispatch not called" + "empty lines → silent" |
+
+#### nonce 类 / JSON validateCommand 类 — **delete（协议变更，无需顶替）**
+
+| 旧断言 | 处置 | 理由 |
+|---|---|---|
+| nonce 校验（无 nonce 全拒） | **delete** | Nonce 协议已废除；R1 首行闸 + 白名单 + 护栏构成新防线 |
+| `SYNOD_CONTROL_NONCE` env 注入 | **delete** | Env 不再需要；唯一 nonce 用途（handshake secret）已移除 |
+| `validateCommand` JSON 校验 | **delete** | 围栏体不再 JSON.parse；`lines` 是字符串数组（control-fence 返回类型断言已保） |
+| `VALID_CMDS` 枚举 | **delete** | 白名单已迁入 agent-fence 分支（/open, @label, /relay），更精确 |
+| `randomUUID` import（nonce 生成） | **delete** | Nonce 生成点已移除；control/nonce 路径无 randomUUID residue（src/flow/logger.mjs 等 flow 层仍有 run/step id 用途，非 control nonce） |
+
+#### 验收类（acceptance B4 → Phase E E2）
+
+| 旧断言 | 处置 | 理由 |
+|---|---|---|
+| B4: nonce + JSON fence → agent 开子会话 | **delete（A3）** | 旧协议 e2e，去 nonce 后必失效；由 Phase E E2（新围栏协议）重建 |
+| A8 relay 回归 | **keep** | 不删，relay 不受 control 改造影响
+
 ## A4 ·（item 4)编排模式开关 plumbing（默认关,全局)【D】【C】【★】
 
 - **🟢 R5 拍板:全局开关 MVP**(评审三方一致)。`--mesh`(CLI 级,无值 boolean,同 `--write`)+ `SYNOD_MESH` env 兜底。**本轮不做 `/open --mesh`** per-session 粒度(留门:将来给非编排会话免注入、减 prompt 噪音)。
