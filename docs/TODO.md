@@ -6,7 +6,7 @@
 ## 进行中索引
 
 > **1–3 已完成并合入 `main`**(flow 引擎 F0–F7 + relay + 标记驱动编排 B1–B4;见 [`HANDOFF.md`](HANDOFF.md))。
-> **4–5 的 TDD 开发计划见 [`MESH_ORCHESTRATION_TDD.md`](MESH_ORCHESTRATION_TDD.md)**(nonce 根治 + 编排技能注入;起草 2026-06-09,已过三方评审)。
+> **4–5 已全部完成并合入 `main`**(2026-06-09,merge `1155d21`):A0–A7 + Phase E,Tier1 534 + 真 agent acceptance 57 全绿;TDD 计划见 [`MESH_ORCHESTRATION_TDD.md`](MESH_ORCHESTRATION_TDD.md)。
 > **item 6 聊天室已移除**(2026-06-09 决定暂不做;原设计草案见本文件 git 历史)。
 
 ## 已完成
@@ -26,7 +26,9 @@
   - **要新建**:① agent→Synod 的指令约定(在输出里放一个严格唯一的标记,如 ` ```synod {"cmd":"open",...}``` `,cli 扫它);② 分发器(解析标记 → 调已有 `/open` / `enqueue`);③ 输出去向(回给人 还是 喂回发起的 agent——与上一条"编排"相关);④ 护栏(最大会话数、递归/深度上限、agent/model 白名单、尊重默认只读)。
   - **限制**:走"解析 agent 输出里的标记"(略脆,需在 prompt 里告知 agent 语法),**不走结构化 tool-call / MCP**——`--tools` 只是 omp 内置工具白名单,非宿主注入自定义工具的口子。**(已确认:不需要 Synod 引入 MCP。)**
 
-## 待办(TDD 计划见 [`MESH_ORCHESTRATION_TDD.md`](MESH_ORCHESTRATION_TDD.md))
+## item 4/5(✅ 2026-06-09 完成,合入 main `1155d21`;TDD 计划见 [`MESH_ORCHESTRATION_TDD.md`](MESH_ORCHESTRATION_TDD.md))
+
+> 下面两条(注入 + nonce 根治)的原始设计记录,**均已落地**:控制总线根治为 ` ```synod ``` ` 围栏 + REPL 命令;omp `--append-system-prompt` / codex `developerInstructions` 注入,默认关、逐字节零影响。**关键洞察**:mesh 注入真 agent 下极有效——codex 在 developer 层内化协议、主动拒吐被禁命令,连强引导都压不过,故护栏拒绝路径只能 Tier1 `agent-fence.test` 测、e2e 改验"端到端无被禁副作用"。
 
 - **在 spawn 时把"编排技能"注入每个 agent(平级 mesh 的前提)** —— 让每个被 Synod 拉起的 agent 自带"怎么用总线"的指令(控制标记协议 + nonce),使每个 peer 都能发起对同级会话的 `open`/`send`;**且不预装进 agent 全局配置,单独使用零影响**。(2026-06-09 确定;为上一条"受控拉起"子项①提供具体落地机制。)
   - **注入字段(已核实 omp v15.10.7 / codex app-server 协议 schema)**:
@@ -48,3 +50,11 @@
     - **已接受的残留风险**:无授权 → agent 引用语法可能**误触发**;靠"围栏标记足够独特 + 护栏限制爆炸半径"兜底(**可信环境模型**:链路内无外部不可信内容)。
     - **波及**:现有 control-* 测试假设 nonce + JSON 命令,需重写为"围栏内 REPL 命令 + 护栏仍生效"。
     - **流程**:实质改动,按"先出方案 → deepseek+codex review → 实现 → e2e → 交叉验证"推进。
+
+## 留门待办(下次可选)
+
+> mesh 编排根治 + 注入(item 4/5)+ Phase E 已完成合入 main(`1155d21`)。本期**主动留门**、下次可选:
+
+- **E6 围栏 + relay 协同 e2e** —— 验证 agent 在 ` ```synod ``` ` 围栏里吐 `/relay a->b`,在本 turn 完成点建链、下一 turn 起生效(沿用现有 relay 时序)。本期 Phase E 标 deferred(真 agent 下可靠构造较难);接线逻辑已由 Tier1 [`control-wire.test.mjs`](../test/control-wire.test.mjs) 覆盖。
+- **`/open --mesh` per-session 粒度** —— 现状 `--mesh` 是全局开关(评审 R5 拍板 MVP);留门给"非编排会话免注入、减 prompt 噪音":让 `/open` 单独指定是否注入 mesh 协议。透传链已留口(`session-manager.open({mesh})` 可显式传,当前 cli 不传)。
+- **持久化 / 恢复** —— flow 引擎的 `ctx` 已设计为纯数据可序列化(留门);整套会话 / flow 的持久化与崩溃恢复尚未做。
