@@ -333,6 +333,8 @@ async function main({
     sm, registry, stderr, dispatch,
   });
   _composedOnTurnComplete = composedOnTurnComplete;
+  // Wire module-level SIGINT handler to these sessions (same as runTasks)
+  gSessions = sm._sessions;
   repl = createRepl({
     prompt: "> ",
     stdin,
