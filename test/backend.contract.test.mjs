@@ -3,6 +3,7 @@ import assert from "node:assert";
 import { openBackend } from "../src/backend.mjs";
 import { makeFakeOmpProc } from "./helpers/fake-backend.mjs";
 import { MESH_INSTRUCTIONS } from "../src/mesh-instructions.mjs";
+import { PassThrough } from "node:stream";
 
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -386,5 +387,90 @@ describe("openBackend omp contract", () => {
       "mesh:false log must not contain --system-prompt");
 
     await session.close();
+  });
+});
+
+// ── CodexSession contract (fake app-server, no real codex startup) ──────
+
+describe("CodexSession mesh injection", () => {
+  /** Create a fake codex app-server companion for testing. */
+  function makeFakeCodexCompanion() {
+    const stdinWrites = [];
+    const fakeStdin = new PassThrough();
+    const fakeStdout = new PassThrough();
+    const fakeStderr = new PassThrough();
+
+    // Capture writes to stdin
+    fakeStdin.on("data", (chunk) => {
+      stdinWrites.push(chunk.toString().trim());
+    });
+
+    // Schedule JSON-RPC responses: initialize(id=1), thread/start(id=2)
+    // Delayed to let readline set up its 'line' listener in start().
+    setImmediate(() => {
+      fakeStdout.push('{"id":1,"result":{"sessionId":"fake-session"}}\n');
+      setImmediate(() => {
+        fakeStdout.push('{"id":2,"result":{"thread":{"id":"fake-thread"}}}\n');
+      });
+    });
+
+    const proc = {
+      stdin: fakeStdin,
+      stdout: fakeStdout,
+      stderr: fakeStderr,
+      pid: 99999,
+      exitCode: null,
+      on() {},
+    };
+    return { proc, stdinWrites };
+  }
+
+  it("mesh:false → thread/start params have no developerInstructions", async () => {
+    const { proc, stdinWrites } = makeFakeCodexCompanion();
+    const session = await openBackend({
+      agent: "codex",
+      cwd: "/tmp",
+      mesh: false,
+      spawnImpl: () => proc,
+    });
+    await session.close();
+
+    // Find thread/start write
+    const ts = stdinWrites.find(s => s.includes('"thread/start"'));
+    assert.ok(ts, "should have thread/start request");
+    const msg = JSON.parse(ts);
+    assert.strictEqual(msg.method, "thread/start");
+    assert.ok(!("developerInstructions" in msg.params),
+      "mesh:false must not include developerInstructions");
+    // Existing fields must be present
+    assert.strictEqual(msg.params.cwd, "/tmp");
+    assert.strictEqual(msg.params.ephemeral, true);
+    assert.strictEqual(msg.params.sandbox, "read-only");
+  });
+
+  it("mesh:true → thread/start params include developerInstructions = MESH_INSTRUCTIONS", async () => {
+    const { proc, stdinWrites } = makeFakeCodexCompanion();
+    const session = await openBackend({
+      agent: "codex",
+      cwd: "/tmp",
+      mesh: true,
+      spawnImpl: () => proc,
+    });
+    await session.close();
+
+    const ts = stdinWrites.find(s => s.includes('"thread/start"'));
+    assert.ok(ts, "should have thread/start request");
+    const msg = JSON.parse(ts);
+    assert.strictEqual(msg.method, "thread/start");
+    assert.strictEqual(msg.params.developerInstructions, MESH_INSTRUCTIONS,
+      "developerInstructions must match MESH_INSTRUCTIONS exactly");
+    // Existing fields still present
+    assert.strictEqual(msg.params.cwd, "/tmp");
+    assert.strictEqual(msg.params.ephemeral, true);
+    assert.strictEqual(msg.params.sandbox, "read-only");
+    assert.strictEqual(msg.params.serviceName, "agent_bridge");
+    // Must NOT use baseInstructions (replacement)
+    assert.ok(!("baseInstructions" in msg.params),
+      "must not use baseInstructions (replacement), use developerInstructions");
   });
 });

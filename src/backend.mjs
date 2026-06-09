@@ -929,16 +929,21 @@ class CodexSession extends EventEmitter {
     );
     this.#notify("initialized", {});
 
+    const threadParams = {
+      cwd: this.cwd,
+      model: this.model,
+      approvalPolicy: "never",
+      sandbox: this.write ? "workspace-write" : "read-only",
+      serviceName: "agent_bridge",
+      ephemeral: true,
+      experimentalRawEvents: false,
+    };
+    if (this.mesh) {
+      threadParams.developerInstructions = MESH_INSTRUCTIONS;
+    }
+
     const started = await withTimeout(
-      this.#request("thread/start", {
-        cwd: this.cwd,
-        model: this.model,
-        approvalPolicy: "never",
-        sandbox: this.write ? "workspace-write" : "read-only",
-        serviceName: "agent_bridge",
-        ephemeral: true,
-        experimentalRawEvents: false,
-      }),
+      this.#request("thread/start", threadParams),
       20000,
       "Timed out on codex thread/start.",
     );
