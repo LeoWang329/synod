@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { main } from "../src/flow.mjs";
 import { fakeOpenBackend } from "./helpers/fake-backend.mjs";
 
-const __dirname = new URL(".", import.meta.url).pathname;
+const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const FIXTURES_DIR = resolve(__dirname, "..", "fixtures", "workflows");
 const VALID_DIR = resolve(FIXTURES_DIR, "valid");
 const NONEXISTENT = resolve(FIXTURES_DIR, "__does_not_exist__");

@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRuntime } from "../src/flow/runtime.mjs";
 import { runFlow } from "../src/flow/runner.mjs";
 import { fakeOpenBackend } from "./helpers/fake-backend.mjs";
@@ -37,7 +37,7 @@ describe("runner", () => {
 
     // Dynamically import the flow module
     const linearPath = resolve(FIXTURES_ROOT, "valid", "linear.mjs");
-    const flowModule = await import(linearPath);
+    const flowModule = await import(pathToFileURL(linearPath).href);
 
     const result = await runFlow(runtime, flowModule, ctx, { topic: "test" });
 
@@ -59,7 +59,7 @@ describe("runner", () => {
     const ctx = runtime.createCtx({});
 
     const linearPath = resolve(FIXTURES_ROOT, "valid", "linear.mjs");
-    const flowModule = await import(linearPath);
+    const flowModule = await import(pathToFileURL(linearPath).href);
 
     await runFlow(runtime, flowModule, ctx, {});
 
@@ -91,7 +91,7 @@ describe("runner", () => {
     });
 
     const linearPath = resolve(FIXTURES_ROOT, "valid", "linear.mjs");
-    const flowModule = await import(linearPath);
+    const flowModule = await import(pathToFileURL(linearPath).href);
 
     // Run once — should succeed
     const ctx = runtime.createCtx({});
@@ -135,7 +135,7 @@ describe("runner", () => {
 
         // After inner returns, outer can still call primitives
         const { bash } = await import("synod/flow");
-        const b = await bash(ctx, "node -e 'process.stdout.write(\"outer\")'");
+        const b = await bash(ctx, "node -e \"process.stdout.write('outer')\"");
 
         return { innerResult, bashResult: b };
       },
@@ -243,7 +243,7 @@ describe("runner", () => {
         );
         // After inner runFlow throws, outer runtime must be restored
         const { bash } = await import("synod/flow");
-        await bash(_ctx, "node -e '1'");
+        await bash(_ctx, 'node -e "1"');
         return "recovered";
       },
     }, outerCtx, {});

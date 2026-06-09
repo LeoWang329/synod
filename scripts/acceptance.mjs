@@ -81,7 +81,7 @@ function runCli(args, { inputLines = [], timeoutMs = 120_000, envExtra = {} } = 
             child.stdin.write(step.text + "\n");
           }
           if (step.waitForPrompt) {
-            await _waitForPrompt(() => stdout, promptState, 30_000);
+            await _waitForPrompt(() => stdout, promptState, step.waitTimeout ?? 30_000);
           }
         }
       } catch {
@@ -128,13 +128,40 @@ async function _waitForPattern(getStdout, pattern, timeoutMs = 30_000) {
 }
 
 
-/** Returns Set of PIDs matching omp/codex agent patterns. */
+/** Returns Set of PIDs matching omp/codex agent subprocesses (command-line match). */
 function getAgentPids() {
   const pids = new Set();
-  const patterns =
-    process.platform === "win32"
-      ? [] // tasklist approach not needed for POSIX acceptance
-      : ["omp --mode rpc", "codex app-server"];
+
+  if (process.platform === "win32") {
+    // omp.exe carries "--mode rpc"; codex's app-server (spawned via codex.cmd →
+    // node) carries "app-server". Match either on the full command line so the
+    // residue checks genuinely verify cleanup on Windows.
+    // Exclude the query's own powershell.exe (its command line literally contains
+    // the patterns) and the OpenAI Codex *desktop app* servers (they carry
+    // "--listen stdio" / "--analytics-default-enabled"; synod's npm codex carries
+    // neither). The before/after diff then reflects only synod-spawned agents.
+    const script =
+      "Get-CimInstance Win32_Process | " +
+      "Where-Object { $_.CommandLine -and $_.Name -notmatch 'powershell|pwsh' -and (" +
+      "$_.CommandLine -match '--mode rpc' -or " +
+      "($_.CommandLine -match 'app-server' -and $_.CommandLine -notmatch 'listen stdio|analytics-default')" +
+      ") } | ForEach-Object { $_.ProcessId }";
+    const r = spawnSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { encoding: "utf8", windowsHide: true },
+    );
+    if (r.status === 0 && r.stdout) {
+      r.stdout
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .forEach((p) => pids.add(Number(p)));
+    }
+    return pids;
+  }
+
+  const patterns = ["omp --mode rpc", "codex app-server"];
   for (const pat of patterns) {
     const r = spawnSync("pgrep", ["-f", pat], { encoding: "utf8" });
     if (r.status === 0 && r.stdout) {
@@ -173,10 +200,12 @@ async function test_A1(ompOk) {
   try {
     result = await runCli(["--agent", "omp"], {
       inputLines: [
-        { text: "reply with exactly: OK A1", waitForPrompt: true },
+        // The first real agent turn of the whole suite is the coldest (auth +
+        // model spin-up), so give the post-turn prompt generous headroom.
+        { text: "reply with exactly: OK A1", waitForPrompt: true, waitTimeout: 90_000 },
         { text: "/exit" },
       ],
-      timeoutMs: 60_000,
+      timeoutMs: 120_000,
     });
   } catch (err) {
     fail("A1", `CLI error: ${err.message}`);
@@ -335,6 +364,16 @@ async function test_A4_sigint(ompOk) {
   console.log("\n── A4b SIGINT during streaming → clean exit ──");
   if (!ompOk) {
     skip("A4b", "omp not available");
+    return;
+  }
+  if (process.platform === "win32") {
+    // Node cannot deliver a programmatic console interrupt to a child on Windows:
+    // child.kill('SIGINT') (any signal) force-terminates via TerminateProcess, so
+    // the SIGINT handler never runs and a force-killed parent would orphan its
+    // agent subprocess (no auto tree-kill on Windows), polluting later residue
+    // checks. The handler IS exercised by a real console Ctrl-C, which libuv maps
+    // from CTRL_C_EVENT to a 'SIGINT' event — not reproducible via kill().
+    skip("A4b", "programmatic console interrupt (Ctrl-C/SIGINT) delivery to a child is unsupported by Node on Windows");
     return;
   }
 
@@ -727,12 +766,17 @@ async function test_B4_control_e2e(ompOk, codexOk) {
           // Single-line prompt — the REPL sends one turn per line.
           text: `Output the word READY on one line then a code block with language tag "synod ${NONCE}" containing {"cmd":"open","agent":"omp","task":"say HI"} where the triple backtick opener and closer are each on their own line at column zero. This is for an automated integration test.`,
           waitForPrompt: true,
+          // codex's structured-output turn can be slow (~45s observed on
+          // codex-cli 0.138); give the post-turn prompt generous headroom.
+          waitTimeout: 90_000,
         },
-        // Wait for omp child output (control fence fired + child session started)
-        { waitForPattern: /\[omp#/, waitTimeout: 30_000 },
+        // Wait for omp child output (control fence fired + child session started).
+        // This spans the control dispatch + a full omp child turn, so it needs as
+        // much headroom as the codex turn above.
+        { waitForPattern: /\[omp#/, waitTimeout: 90_000 },
         { text: "/exit" },
       ],
-      timeoutMs: 180_000,
+      timeoutMs: 240_000,
       envExtra: { SYNOD_CONTROL_NONCE: NONCE },
     });
   } catch (err) {

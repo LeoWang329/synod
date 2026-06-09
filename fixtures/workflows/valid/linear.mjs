@@ -8,7 +8,7 @@ export const meta = {
 
 export async function run(ctx, input) {
   const a = await agent(ctx, { agent: "omp", model: "m", prompt: "step 1" });
-  const b = await bash(ctx, "node -e 'process.stdout.write(\"ok\")'");
+  const b = await bash(ctx, "node -e \"process.stdout.write('ok')\"");
   const c = await agent(ctx, { agent: "codex", model: "m2", prompt: "step 3" });
   return { a, b, c };
 }

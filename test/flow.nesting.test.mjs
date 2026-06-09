@@ -1,7 +1,7 @@
 import { describe, it, before } from "node:test";
 import assert from "node:assert";
 import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRuntime } from "../src/flow/runtime.mjs";
 import { runFlow } from "../src/flow/runner.mjs";
 import { loadFlow } from "../src/flow/loader.mjs";
@@ -60,7 +60,7 @@ describe("runWorkflow nesting", () => {
   // ── 1. parent calls child and uses return value ───────────────────
   it("parent calls child via runWorkflow and uses child's return value", async () => {
     const parentPath = resolve(NESTING_ROOT, "parent-calls-child.mjs");
-    const parentModule = await import(parentPath);
+    const parentModule = await import(pathToFileURL(parentPath).href);
     const ctx = runtime.createCtx({});
     const result = await runFlow(runtime, parentModule, ctx, { message: "hi" });
 
@@ -73,7 +73,7 @@ describe("runWorkflow nesting", () => {
     const fs = memoryFs();
     const rt = makeRt({ fs });
     const parentPath = resolve(NESTING_ROOT, "parent-calls-child.mjs");
-    const parentModule = await import(parentPath);
+    const parentModule = await import(pathToFileURL(parentPath).href);
     const ctx = rt.createCtx({});
     await runFlow(rt, parentModule, ctx, { message: "log-test" });
 
@@ -101,7 +101,7 @@ describe("runWorkflow nesting", () => {
     const fs = memoryFs();
     const rt = makeRt({ fs });
     const childPath = resolve(NESTING_ROOT, "child-echo.mjs");
-    const mod = await import(childPath);
+    const mod = await import(pathToFileURL(childPath).href);
     const ctx = rt.createCtx({});
     await runFlow(rt, mod, ctx, { message: "root" });
 
@@ -115,7 +115,7 @@ describe("runWorkflow nesting", () => {
   it("throws when nesting depth exceeds maxDepth", async () => {
     const rt = makeRt({ maxDepth: 2, maxActiveSubRuns: 10 });
     const chainPath = resolve(NESTING_ROOT, "deep-chain.mjs");
-    const mod = await import(chainPath);
+    const mod = await import(pathToFileURL(chainPath).href);
     const ctx = rt.createCtx({});
 
     await assert.rejects(
@@ -133,7 +133,7 @@ describe("runWorkflow nesting", () => {
   it("rejects when maxActiveSubRuns is 0", async () => {
     const rt = makeRt({ maxActiveSubRuns: 0 });
     const parentPath = resolve(NESTING_ROOT, "parent-calls-child.mjs");
-    const mod = await import(parentPath);
+    const mod = await import(pathToFileURL(parentPath).href);
     const ctx = rt.createCtx({});
 
     await assert.rejects(
@@ -173,7 +173,9 @@ describe("runWorkflow nesting", () => {
     const parentFlow = {
       async run(ctx, _input) {
         const { runWorkflow } = await import("synod/flow");
-        return await runWorkflow(ctx, "./child-bash", { cmd: "pwd" });
+        return await runWorkflow(ctx, "./child-bash", {
+          cmd: 'node -e "process.stdout.write(process.cwd())"',
+        });
       },
     };
 

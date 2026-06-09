@@ -46,6 +46,8 @@ const STATE_ROOT =
   process.env.AGENT_BRIDGE_STATE_DIR || path.join(os.homedir(), ".agent-bridge");
 const LOG_DIR = path.join(STATE_ROOT, "logs");
 
+const IS_WINDOWS = process.platform === "win32";
+
 const AGENTS = {
   omp: {
     label: "Oh My Pi",
@@ -96,6 +98,100 @@ function assertCwd(cwd) {
 function agentBin(agent) {
   const config = AGENTS[agent];
   return process.env[config.env] || config.bin;
+}
+
+// ── Windows-safe spawning (ported from agent-bridge 0.7.0, commit 6045026) ──
+//
+// Node cannot launch a .cmd/.bat directly on Windows: a bare name fails with
+// ENOENT (Node does not search PATHEXT) and a `foo.cmd` path fails with EINVAL
+// (Node 20+ refuses to exec batch files without a shell). But routing a real
+// .exe through cmd.exe is both unnecessary and unsafe — cmd.exe re-parses every
+// argument, so a metacharacter in a value like --model becomes command injection.
+// So on Windows we resolve the real target: native executables are spawned
+// DIRECTLY (clean argv, no shell, no injection); only genuine .cmd/.bat shims go
+// through cmd.exe. On POSIX everything is unchanged.
+
+// Resolve `bin` to a concrete file by searching PATH and trying each PATHEXT
+// extension in order (so a native .exe wins over a .cmd in the same directory).
+// PATH only — we do not resolve against the current directory. Returns the
+// resolved path, or null if nothing matched.
+function resolveWindowsExecutable(bin) {
+  const exts = (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((e) => e.trim())
+    .filter(Boolean);
+  const lower = bin.toLowerCase();
+  const hasKnownExt = exts.some((e) => lower.endsWith(e.toLowerCase()));
+  const asFile = (p) => {
+    try {
+      return fs.statSync(p).isFile() ? p : null;
+    } catch {
+      return null;
+    }
+  };
+  if (path.isAbsolute(bin) || bin.includes("\\") || bin.includes("/")) {
+    // Try the path exactly as given first — this covers an explicit shim
+    // (e.g. CODEX_BIN=C:\...\codex.cmd) even when the user's PATHEXT was
+    // customized to omit that extension, so `hasKnownExt` is false.
+    const direct = asFile(bin);
+    if (direct) return direct;
+    if (hasKnownExt) return null;
+    for (const e of exts) {
+      const f = asFile(bin + e);
+      if (f) return f;
+    }
+    return null;
+  }
+  for (const dir of (process.env.PATH || "")
+    .split(path.delimiter)
+    .filter(Boolean)) {
+    if (hasKnownExt) {
+      const f = asFile(path.join(dir, bin));
+      if (f) return f;
+    } else {
+      for (const e of exts) {
+        const f = asFile(path.join(dir, bin + e));
+        if (f) return f;
+      }
+    }
+  }
+  return null;
+}
+
+// Decide how to spawn `bin args`. POSIX spawns directly. On Windows, resolve the
+// real target and only wrap genuine .cmd/.bat through cmd.exe. Callers must NOT
+// pass shell:true.
+function spawnPlan(bin, args) {
+  if (!IS_WINDOWS) return { command: bin, args };
+  const resolved = resolveWindowsExecutable(bin);
+  if (resolved && /\.(cmd|bat)$/i.test(resolved)) {
+    // Batch shim: must go through cmd.exe. Node MSVCRT-quotes argv entries with
+    // spaces; a resolved path with cmd metacharacters (& | ^ etc.) is unsupported,
+    // but real install paths never use them.
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", resolved, ...args],
+    };
+  }
+  // Native executable, or an unresolved bare name (fall through so the OS reports
+  // ENOENT cleanly).
+  return { command: resolved || bin, args };
+}
+
+// Reject shell/CLI-hostile characters in pass-through agent arguments
+// (OMP --model / --thinking). Defense in depth: the default backends resolve to
+// executables we spawn without a shell, but a .cmd-based OMP_BIN would route these
+// through cmd.exe, and a metacharacter must never reach a command line. Real
+// model/effort names only use this character set.
+function sanitizeAgentArg(value, label) {
+  if (value == null) return null;
+  const str = String(value);
+  if (!/^[A-Za-z0-9._:/@+-]+$/.test(str)) {
+    throw new Error(
+      `Invalid ${label} "${str}": only letters, digits, and . _ : / @ + - are allowed.`,
+    );
+  }
+  return str;
 }
 
 // 0.5.1:235
@@ -212,14 +308,19 @@ function terminateProcessTree(pid, signal = "SIGTERM") {
   if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return false;
 
   if (process.platform === "win32") {
-    try {
-      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        encoding: "utf8",
-      });
-      return true;
-    } catch {
-      return false;
-    }
+    // Forceful (/F) and synchronous, by design: synod tears a session down right
+    // before the CLI calls process.exit(), so there is NO window for a delayed
+    // force-kill backstop (scheduleForceKill is unref'd + 3s out) to ever fire.
+    // A graceful taskkill (no /F) is also unreliable for a windowless console
+    // process like omp.exe. So the kill must be guaranteed here and now. /T takes
+    // the whole tree (the agent may sit under a cmd.exe shim or spawn children);
+    // exit code 128 ("process not found") means the tree is already gone. The
+    // `signal` arg is moot on Windows, which has no POSIX signal semantics.
+    const result = spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    return result.status === 0 || result.status === 128;
   }
 
   for (const childPid of listChildPids(pid))
@@ -232,18 +333,27 @@ function terminateProcessTree(pid, signal = "SIGTERM") {
   }
 }
 
-// 0.5.1:411
-function scheduleForceKill(pid, graceMs = 3000) {
+// 0.5.1:411 — keyed off the ChildProcess, not a bare PID.
+//
+// A bare-PID existence probe (process.kill(pid, 0)) cannot tell our exited child
+// apart from an unrelated process that the OS later recycled the same PID for, so
+// the force-kill could hit the wrong process. Node tracks the *actual* child we
+// spawned via proc.exitCode / proc.signalCode (both null only while it is still
+// running), so gating on those — and cancelling the timer when the child exits in
+// time — makes a recycled-PID kill impossible.
+function scheduleForceKill(proc, graceMs = 3000) {
+  const pid = proc?.pid;
   if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return;
   const timer = setTimeout(() => {
-    try {
-      process.kill(pid, 0);
-    } catch {
-      return; // already exited
+    // Strict null on BOTH fields = "the child we spawned is still running".
+    // (A fake test proc has no signalCode, so it is correctly excluded here.)
+    if (proc.exitCode === null && proc.signalCode === null) {
+      terminateProcessTree(pid, "SIGKILL");
     }
-    terminateProcessTree(pid, "SIGKILL");
   }, graceMs);
   timer.unref?.();
+  // Child exited within the grace window → nothing left to force-kill.
+  proc.once?.("exit", () => clearTimeout(timer));
 }
 
 // 0.5.1:2926
@@ -274,8 +384,8 @@ class OmpSession extends EventEmitter {
     this.agent = "omp";
     this.cwd = assertCwd(options.cwd);
     this.write = Boolean(options.write);
-    this.model = options.model || null;
-    this.effort = options.effort || null;
+    this.model = sanitizeAgentArg(options.model || null, "model");
+    this.effort = sanitizeAgentArg(options.effort || null, "effort");
     this.createdAt = nowIso();
     this.updatedAt = this.createdAt;
     this.status = "starting";
@@ -327,10 +437,12 @@ class OmpSession extends EventEmitter {
       this.readyReject = reject;
     });
 
-    this.proc = this._spawn(agentBin("omp"), args, {
+    const plan = spawnPlan(agentBin("omp"), args);
+    this.proc = this._spawn(plan.command, plan.args, {
       cwd: this.cwd,
       env: process.env,
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
     });
     appendLog(
       this.logFile,
@@ -663,7 +775,14 @@ class OmpSession extends EventEmitter {
     try {
       this.proc?.stdin?.end();
     } catch {}
+    // win32: terminateProcessTree is forceful + synchronous, so the tree is gone
+    // when this returns. POSIX: it sends SIGTERM (graceful); scheduleForceKill is
+    // the SIGKILL backstop for NON-exit close paths (e.g. openBackend start
+    // failure) where the process keeps running — symmetric with CodexSession.close.
+    // (In the CLI's immediate-exit paths the unref'd 3s timer simply never fires,
+    // which is fine: win32 already killed synchronously, POSIX relies on SIGTERM.)
     terminateProcessTree(this.proc?.pid);
+    scheduleForceKill(this.proc);
     return { closed: true, session_id: this.id };
   }
 }
@@ -677,8 +796,8 @@ class CodexSession extends EventEmitter {
     this.agent = "codex";
     this.cwd = assertCwd(options.cwd);
     this.write = Boolean(options.write);
-    this.model = options.model || null;
-    this.effort = options.effort || null;
+    this.model = sanitizeAgentArg(options.model || null, "model");
+    this.effort = sanitizeAgentArg(options.effort || null, "effort");
     this.createdAt = nowIso();
     this.updatedAt = this.createdAt;
     this.status = "starting";
@@ -707,10 +826,12 @@ class CodexSession extends EventEmitter {
       this.logFile,
       `$ ${[agentBin("codex"), ...args].join(" ")}\n`,
     );
-    this.proc = this._spawn(agentBin("codex"), args, {
+    const plan = spawnPlan(agentBin("codex"), args);
+    this.proc = this._spawn(plan.command, plan.args, {
       cwd: this.cwd,
       env: process.env,
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
     });
     appendLog(
       this.logFile,
@@ -1309,7 +1430,7 @@ class CodexSession extends EventEmitter {
     this.#rejectAll(new Error("session closed"));
     const pid = this.proc?.pid;
     terminateProcessTree(pid);
-    scheduleForceKill(pid);
+    scheduleForceKill(this.proc);
     return { closed: true, session_id: this.id };
   }
 }
@@ -1362,7 +1483,11 @@ export function doctor() {
   const result = {};
   for (const [agent, config] of Object.entries(AGENTS)) {
     const bin = agentBin(agent);
-    const probe = spawnSync(bin, ["--version"], { encoding: "utf8" });
+    const plan = spawnPlan(bin, ["--version"]);
+    const probe = spawnSync(plan.command, plan.args, {
+      encoding: "utf8",
+      windowsHide: true,
+    });
     result[agent] = {
       available: probe.status === 0,
       version: probe.status === 0
