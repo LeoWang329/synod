@@ -1,0 +1,128 @@
+// synod/test/mesh-instructions.test.mjs — Tests for MESH_INSTRUCTIONS constant.
+//
+// Covers:
+// 1. Fingerprint assertions (required content present)
+// 2. Negative assertions (forbidden content absent)
+// 3. Length < 16384
+// 4. Snapshot anchor (opening framing sentence)
+
+import { describe, it } from "node:test";
+import assert from "node:assert";
+import { MESH_INSTRUCTIONS } from "../src/mesh-instructions.mjs";
+
+describe("MESH_INSTRUCTIONS content", () => {
+  it("is a non-empty string", () => {
+    assert.strictEqual(typeof MESH_INSTRUCTIONS, "string");
+    assert.ok(MESH_INSTRUCTIONS.length > 0, "should not be empty");
+  });
+
+  it("length is under 16384", () => {
+    assert.ok(
+      MESH_INSTRUCTIONS.length < 16384,
+      `length ${MESH_INSTRUCTIONS.length} should be < 16384`,
+    );
+  });
+});
+
+// ── Fingerprint assertions (required content must be present) ───────────
+
+describe("MESH_INSTRUCTIONS fingerprints", () => {
+  const text = MESH_INSTRUCTIONS;
+
+  it("contains ```synod fence syntax", () => {
+    assert.match(text, /```synod/);
+  });
+
+  it("contains /open --agent", () => {
+    assert.match(text, /\/open --agent/);
+  });
+
+  it("contains @ label syntax reference", () => {
+    assert.match(text, /@<label>/);
+  });
+
+  it("contains /relay", () => {
+    assert.match(text, /\/relay/);
+  });
+
+  it("mentions maxSessions or session limit", () => {
+    assert.match(text, /maxSessions|maximum.*session|session.*limit|护栏/i);
+  });
+
+  it("mentions maxDepth or depth limit", () => {
+    assert.match(text, /maxDepth|maximum.*depth|depth.*limit|递归深度/i);
+  });
+
+  it("contains read-only or 只读", () => {
+    assert.match(text, /read.only|只读/i);
+  });
+});
+
+// ── Negative assertions (forbidden content must be absent) ──────────────
+
+describe("MESH_INSTRUCTIONS sanitization", () => {
+  const text = MESH_INSTRUCTIONS;
+
+  it("does not contain 'nonce'", () => {
+    assert.ok(!text.includes("nonce"), "must not contain nonce");
+  });
+
+  it("does not contain '@all'", () => {
+    assert.ok(!text.includes("@all"), "must not contain @all");
+  });
+
+  it("does not contain 'skill' (--no-extensions)", () => {
+    assert.ok(!text.includes("skill"), "must not reference skill");
+  });
+
+  it("does not contain inducing --write phrasing", () => {
+    // "需要 --write", "use --write", "add --write", "pass --write"
+    assert.ok(
+      !/需要.*--write|use.*--write|add.*--write|pass.*--write/i.test(text),
+      "must not induce agent to request --write",
+    );
+  });
+
+  it("does not contain @all in any form", () => {
+    assert.ok(!/@all/.test(text), "must not contain @all pattern");
+  });
+
+  it("covers @all exclusion without literal @all word", () => {
+    // Must cover broadcast-style targets (like @all) without using "@all" literally
+    assert.match(
+      text,
+      /Only the three command forms above|broadcast-style|non-label/i,
+      "should cover @all exclusion generically",
+    );
+    assert.ok(!text.includes("@all"), "but must not contain @all literal");
+  });
+});
+
+// ── Snapshot anchor ─────────────────────────────────────────────────────
+
+describe("MESH_INSTRUCTIONS snapshot anchor", () => {
+  it("opens with Synod mesh orchestration framing", () => {
+    // Must start by disambiguating: this is protocol, not user instruction.
+    assert.match(
+      MESH_INSTRUCTIONS,
+      /Synod.*mesh|mesh.*orchestrat|编排协议|protocol.*synod/i,
+      "should frame as Synod mesh protocol",
+    );
+  });
+
+  it("states it is NOT user instruction", () => {
+    assert.match(
+      MESH_INSTRUCTIONS,
+      /not.*user|不是.*用户|并列.*system|system.*prompt/i,
+      "should clarify this is not user/business instruction",
+    );
+  });
+
+  it("states first line must start with / or @", () => {
+    assert.match(
+      MESH_INSTRUCTIONS,
+      /首行.*(\/|@)|first.*line.*(\/|@)|column.*0.*(\/|@)/i,
+      "should specify first line requirement",
+    );
+  });
+});
