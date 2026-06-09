@@ -15,6 +15,7 @@
 //                     — win32 branch added for cross-platform support
 //   OmpSession:       forked from OmpRpcSession (466–780), renamed
 //   CodexSession:     forked from CodexAppServerSession (782–1255), renamed
+import { MESH_INSTRUCTIONS } from "./mesh-instructions.mjs";
 //   doctor:           forked from doctor (1401), restructured for Synod export
 //
 // Deliberately omitted:
@@ -423,6 +424,10 @@ class OmpSession extends EventEmitter {
         "--approval-mode",
         "yolo",
       );
+    }
+
+    if (this.mesh) {
+      args.push(`--append-system-prompt=${MESH_INSTRUCTIONS}`);
     }
 
     appendLog(

@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import { openBackend } from "../src/backend.mjs";
 import { makeFakeOmpProc } from "./helpers/fake-backend.mjs";
+import { MESH_INSTRUCTIONS } from "../src/mesh-instructions.mjs";
 
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -312,8 +313,78 @@ describe("openBackend omp contract", () => {
     assert.strictEqual(session.mesh, false, "default session.mesh should be false");
     await session.close();
   });
-  // Note: mesh is stored identically in OmpSession and CodexSession constructors
-  // — the path through openBackend → options → constructor is the same for both.
-  // OmpSession tests above cover the full plumbing.  CodexSession constructor
-  // testing needs a codex-specific fake spawn (out of scope for this contract test).
+
+  it("mesh:false → spawn args have no --append-system-prompt and no --system-prompt", async () => {
+    let capturedArgs = null;
+    function spawnImpl(_bin, args, _opts) { capturedArgs = [...args]; return makeFakeOmpProc(); }
+    const session = await openBackend({
+      agent: "omp", cwd: "/tmp", mesh: false, spawnImpl,
+    });
+    assert.ok(capturedArgs, "spawnImpl should have been called");
+    assert.ok(!capturedArgs.some(a => a.startsWith("--append-system-prompt")),
+      "mesh:false must not append --append-system-prompt");
+    assert.ok(!capturedArgs.some(a => a.startsWith("--system-prompt")),
+      "mesh:false must not pass --system-prompt");
+    await session.close();
+  });
+
+  it("mesh:true → spawn args include --append-system-prompt=MESH_INSTRUCTIONS, no --system-prompt", async () => {
+    let baseArgs = null;
+    function spawnImplBase(_bin, args, _opts) { baseArgs = [...args]; return makeFakeOmpProc(); }
+    const sessionBase = await openBackend({
+      agent: "omp", cwd: "/tmp", mesh: false, spawnImpl: spawnImplBase,
+    });
+    assert.ok(baseArgs, "base args should be captured");
+    await sessionBase.close();
+
+    let meshArgs = null;
+    function spawnImplMesh(_bin, args, _opts) { meshArgs = [...args]; return makeFakeOmpProc(); }
+    const sessionMesh = await openBackend({
+      agent: "omp", cwd: "/tmp", mesh: true, spawnImpl: spawnImplMesh,
+    });
+    assert.ok(meshArgs, "mesh args should be captured");
+
+    // Find and verify --append-system-prompt
+    const appendIdx = meshArgs.findIndex(a => a.startsWith("--append-system-prompt="));
+    assert.ok(appendIdx >= 0, "mesh:true should include --append-system-prompt=...");
+    const appendVal = meshArgs[appendIdx];
+    const expectedFlag = "--append-system-prompt=" + MESH_INSTRUCTIONS;
+    assert.strictEqual(appendVal, expectedFlag, "value must match MESH_INSTRUCTIONS exactly");
+
+    // Remove --append-system-prompt from meshArgs, remainder must equal baseArgs
+    const meshArgsWithoutAppend = meshArgs.filter(a => !a.startsWith("--append-system-prompt="));
+    assert.deepStrictEqual(meshArgsWithoutAppend, baseArgs,
+      "mesh:true args minus --append-system-prompt must equal mesh:false args");
+
+    // Must NOT contain --system-prompt (replacement, not append)
+    assert.ok(!meshArgs.some(a => a.startsWith("--system-prompt")),
+      "must not use --system-prompt (replacement)");
+
+    await sessionMesh.close();
+  });
+
+  it("mesh:false → log file contains OMP command line, no --append-system-prompt", async () => {
+    const { open } = await import("node:fs/promises");
+    const session = await openBackend({
+      agent: "omp", cwd: "/tmp", mesh: false,
+      spawnImpl: () => makeFakeOmpProc(),
+    });
+    // Read the log file content
+    let content = "";
+    try {
+      const fh = await open(session.logFile);
+      content = await fh.readFile("utf-8");
+      await fh.close();
+    } catch { /* log may not exist if appendLog never wrote */ }
+
+    assert.ok(content.includes("--mode"), "should contain OMP args");
+    assert.ok(content.includes("--no-extensions"), "should contain --no-extensions");
+    assert.ok(content.includes("--no-rules"), "should contain --no-rules");
+    assert.ok(!content.includes("--append-system-prompt"),
+      "mesh:false log must not contain --append-system-prompt");
+    assert.ok(!content.includes("--system-prompt"),
+      "mesh:false log must not contain --system-prompt");
+
+    await session.close();
+  });
 });
