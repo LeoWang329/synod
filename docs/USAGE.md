@@ -63,7 +63,7 @@ node src/cli.mjs --help          # 查看全部参数
 
 | 命令 | 作用 |
 |---|---|
-| `/open [--agent A] [--model M] [--effort E] [--write]` | 新开一个会话 |
+| `/open [--agent A] [--model M] [--effort E] [--write] [--mesh\|--no-mesh]` | 新开一个会话(`--mesh/--no-mesh` 覆盖本会话默认) |
 | `/use <label>` | 切换当前会话 |
 | `/sessions` | 列出所有会话 |
 | `@<label> <msg>` / `@all <msg>` | 定向 / 广播 |

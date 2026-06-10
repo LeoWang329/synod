@@ -187,3 +187,48 @@ describe("cli main() integration", () => {
     assert.strictEqual(exitCode, 0);
   });
 });
+
+// ── mesh precedence: --mesh/--no-mesh flag > SYNOD_MESH env > off ────────
+// Guards the `args.mesh ?? meshFromEnv(env)` composition in main().  The
+// default session opens with no explicit mesh, so the FakeSession it receives
+// carries the *effective* mesh — exactly what we assert here.  A regression to
+// `||` would silently break the --no-mesh-overrides-env row.
+describe("cli main() mesh precedence", () => {
+  /** Run main(), capturing the mesh value the default session's backend got. */
+  async function effectiveMesh({ argv = [], env = {} }) {
+    let captured;
+    const openBackend = (o) => {
+      if (captured === undefined) captured = o.mesh; // first = default session
+      return new FakeSession(o);
+    };
+    const stdin = feedLines(["/exit"]);
+    await main({
+      openBackend, stdin,
+      stdout: captureStream(), stderr: captureStream(),
+      // main() does parseArgs(argv.slice(2)), so pad the node+script slots.
+      argv: ["node", "synod", ...argv],
+      env: { OMP_BIN: "node", CODEX_BIN: "node", ...env },
+    });
+    return captured;
+  }
+
+  it("no flag, no env → mesh off", async () => {
+    assert.strictEqual(await effectiveMesh({ argv: [], env: {} }), false);
+  });
+
+  it("--mesh, no env → mesh on", async () => {
+    assert.strictEqual(await effectiveMesh({ argv: ["--mesh"], env: {} }), true);
+  });
+
+  it("no flag, SYNOD_MESH=1 → mesh on (env supplies default)", async () => {
+    assert.strictEqual(await effectiveMesh({ argv: [], env: { SYNOD_MESH: "1" } }), true);
+  });
+
+  it("--no-mesh overrides SYNOD_MESH=1 → mesh off (regression guard for `??` vs `||`)", async () => {
+    assert.strictEqual(await effectiveMesh({ argv: ["--no-mesh"], env: { SYNOD_MESH: "1" } }), false);
+  });
+
+  it("--mesh wins even if SYNOD_MESH=0", async () => {
+    assert.strictEqual(await effectiveMesh({ argv: ["--mesh"], env: { SYNOD_MESH: "0" } }), true);
+  });
+});

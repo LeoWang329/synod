@@ -65,6 +65,18 @@ export function parseOpenArgs(tokens) {
       case "--write":
         opts.write = true;
         break;
+      case "--mesh":
+      case "--no-mesh": {
+        // Tri-state: undefined (inherit session default) | true | false.
+        // Conflicting flags in one command are rejected rather than last-wins,
+        // so the caller gets explicit feedback instead of a silent surprise.
+        const val = tok === "--mesh";
+        if (opts.mesh !== undefined && opts.mesh !== val) {
+          return { error: "--mesh and --no-mesh are mutually exclusive" };
+        }
+        opts.mesh = val;
+        break;
+      }
       default:
         return { error: `Unknown option: ${tok}` };
     }
@@ -74,6 +86,14 @@ export function parseOpenArgs(tokens) {
 
 // ── Guardrails (migrated from control-dispatch._guard, adapted for /open opts) ─
 
+// NOTE on mesh: there is deliberately no guard for `--mesh`/`--no-mesh` here.
+// mesh confers no new wire authority — the host-side fence parser+dispatcher
+// (wireControl) scans every child's turn text regardless of mesh, so a mesh-off
+// child can still emit a dispatchable fence; mesh=true only controls whether the
+// child is *told* the protocol via prompt injection.  The real risks — spawn
+// amplification (fork-bomb) and write access — are bounded by maxDepth +
+// maxSessions + allowWrite below, none of which mesh can bypass.  Gating mesh
+// escalation would therefore be theater, not defense.
 function guardOpen({ agent, model, write }, depth, sm, g) {
   if (sm._sessions.size >= g.maxSessions) {
     return `max sessions (${g.maxSessions}) reached`;
@@ -259,6 +279,7 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
         model: opts.model,
         effort: opts.effort,
         write: opts.write,
+        mesh: opts.mesh, // undefined → sm falls back to session default
         announce: "interactive",
       }).then(() => ({ redraw: true }));
     }
@@ -304,6 +325,7 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
           model: opts.model,
           effort: opts.effort,
           write: opts.write,
+          mesh: opts.mesh, // undefined → sm falls back to session default
           announce: false,
         }).then((label) => {
           if (!label) {

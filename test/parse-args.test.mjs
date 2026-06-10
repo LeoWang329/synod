@@ -55,9 +55,37 @@ describe("parseArgs", () => {
     assert.strictEqual(out._unknown, null);
   });
 
-  it("--mesh default false", () => {
-    const out = parseArgs([]);
+  it("--no-mesh", () => {
+    const out = parseArgs(["--no-mesh"]);
     assert.strictEqual(out.mesh, false);
+    assert.strictEqual(out._unknown, null);
+  });
+
+  it("mesh defaults to undefined (tri-state: falls back to SYNOD_MESH env)", () => {
+    const out = parseArgs([]);
+    assert.strictEqual(out.mesh, undefined);
+  });
+
+  it("--mesh --no-mesh → mutually-exclusive error (mirrors /open)", () => {
+    const out = parseArgs(["--mesh", "--no-mesh"]);
+    assert.ok(out._unknown && out._unknown.includes("mutually exclusive"));
+  });
+
+  it("--no-mesh --mesh (reverse) → mutually-exclusive error", () => {
+    const out = parseArgs(["--no-mesh", "--mesh"]);
+    assert.ok(out._unknown && out._unknown.includes("mutually exclusive"));
+  });
+
+  it("repeated --mesh is idempotent (no error)", () => {
+    const out = parseArgs(["--mesh", "--mesh"]);
+    assert.strictEqual(out.mesh, true);
+    assert.strictEqual(out._unknown, null);
+  });
+
+  it("repeated --no-mesh is idempotent (no error)", () => {
+    const out = parseArgs(["--no-mesh", "--no-mesh"]);
+    assert.strictEqual(out.mesh, false);
+    assert.strictEqual(out._unknown, null);
   });
 
   it("--task omp:hello", () => {

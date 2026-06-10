@@ -101,6 +101,36 @@ describe("parseOpenArgs", () => {
     assert.deepStrictEqual(parseOpenArgs(["--write"]), { write: true });
   });
 
+  it("--mesh → { mesh: true }", () => {
+    assert.deepStrictEqual(parseOpenArgs(["--mesh"]), { mesh: true });
+  });
+
+  it("--no-mesh → { mesh: false }", () => {
+    assert.deepStrictEqual(parseOpenArgs(["--no-mesh"]), { mesh: false });
+  });
+
+  it("no mesh flag → mesh key absent (inherit default)", () => {
+    assert.strictEqual("mesh" in parseOpenArgs(["--agent", "codex"]), false);
+  });
+
+  it("--mesh --no-mesh together → mutually-exclusive error", () => {
+    const r = parseOpenArgs(["--mesh", "--no-mesh"]);
+    assert.ok(r.error.includes("mutually exclusive"));
+  });
+
+  it("--no-mesh --mesh (reverse order) → mutually-exclusive error", () => {
+    const r = parseOpenArgs(["--no-mesh", "--mesh"]);
+    assert.ok(r.error.includes("mutually exclusive"));
+  });
+
+  it("repeated --mesh is idempotent (not an error)", () => {
+    assert.deepStrictEqual(parseOpenArgs(["--mesh", "--mesh"]), { mesh: true });
+  });
+
+  it("repeated --no-mesh is idempotent (not an error)", () => {
+    assert.deepStrictEqual(parseOpenArgs(["--no-mesh", "--no-mesh"]), { mesh: false });
+  });
+
   it("combined: --agent codex --model mini --write", () => {
     assert.deepStrictEqual(parseOpenArgs(["--agent", "codex", "--model", "mini", "--write"]), {
       agent: "codex",
@@ -338,6 +368,27 @@ describe("dispatch / commands", () => {
     assert.strictEqual(sm.calls.open[0].effort, "high");
     assert.strictEqual(sm.calls.open[0].write, true);
     assert.strictEqual(sm.calls.open[0].announce, "interactive");
+  });
+
+  it("/open --mesh propagates mesh:true to sm.open", async () => {
+    const { dispatch, sm } = setup();
+    await dispatch("/open --mesh");
+    assert.strictEqual(sm.calls.open.length, 1);
+    assert.strictEqual(sm.calls.open[0].mesh, true);
+  });
+
+  it("/open --no-mesh propagates mesh:false to sm.open", async () => {
+    const { dispatch, sm } = setup();
+    await dispatch("/open --no-mesh");
+    assert.strictEqual(sm.calls.open.length, 1);
+    assert.strictEqual(sm.calls.open[0].mesh, false);
+  });
+
+  it("/open without mesh flag passes mesh:undefined (sm inherits default)", async () => {
+    const { dispatch, sm } = setup();
+    await dispatch("/open");
+    assert.strictEqual(sm.calls.open.length, 1);
+    assert.strictEqual(sm.calls.open[0].mesh, undefined);
   });
 
   it("/open --verbose writes Unknown option to stderr, no sm.open", async () => {

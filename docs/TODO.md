@@ -51,10 +51,22 @@
     - **波及**:现有 control-* 测试假设 nonce + JSON 命令,需重写为"围栏内 REPL 命令 + 护栏仍生效"。
     - **流程**:实质改动,按"先出方案 → deepseek+codex review → 实现 → e2e → 交叉验证"推进。
 
+## per-session mesh 粒度(✅ 2026-06-10 完成)
+
+- ✅ **`/open --mesh` / `--no-mesh` per-session 覆盖** —— 让单个会话(human 或 agent-fence)覆盖继承的 mesh 默认。透传链原已通(`sm.open` 内 `mesh ?? _defaults.mesh`);本次补:① `parseOpenArgs` 三态解析 `--mesh`/`--no-mesh`(`undefined` 继承 / `true` / `false`,互斥报错、同 flag 幂等);② human 与 agent-fence 两处 `/open` 各透传 `mesh`。
+  - **评审驱动的连带修整**(codex + deepseek-v4-pro **三轮**交叉评审,最终均判 closeable):
+    - **顶层 `--no-mesh` + `??` 优先级**:`parseArgs` 默认 `false→undefined`、`main()` `||→??`,优先级 = 显式 flag > `SYNOD_MESH` env > off。**根治**"设了 `SYNOD_MESH=1` 就无法在非交互(`--task`)下关 mesh"的真实缺口。
+    - **MESH_INSTRUCTIONS 同时文档化两个 flag**:`_defaults.mesh` 是单一全局、非 per-session——mesh-off 跑时人工 `/open --mesh` 抬起的编排者,其子代仍继承 false,要建子网**必须显式 `--mesh`**(codex 反例,推翻了我"只暴露 `--no-mesh`"的初判);措辞按评审改为"不会**被提示**去编排"(mesh 只控注入,非能力闸)。
+    - **CLI/REPL 互斥一致**:`parseArgs` 镜像 `parseOpenArgs` 的 `--mesh/--no-mesh` 互斥(原顶层是静默 last-wins)。
+  - **不给 agent-fence mesh 加 guard(第一性,评审认可)**:mesh 非能力闸——fence wire(host 侧 `wireControl`)与 mesh 无关恒开,真实风险(fork-bomb / 写)由 `maxDepth`+`maxSessions`+`allowWrite` 兜住,mesh 绕不过;拦它是表演非防御。
+  - **测试**:单测 **560/560**(+26 覆盖三态解析/两向互斥/幂等/双路径透传/per-call 压默认/顶层优先级含 `--no-mesh` 压 `SYNOD_MESH=1`/指令指纹);e2e **E1–E4 mesh 全绿**。A5 因本机 **MiniMax-M3 远程 provider 掉线/401** 超时,与本改动无关(A1–A4 本地 omp 全过,A5 首个调远程才卡)。
+
 ## 留门待办(下次可选)
 
-> mesh 编排根治 + 注入(item 4/5)+ Phase E 已完成合入 main(`1155d21`)。本期**主动留门**、下次可选:
+> mesh 编排根治 + 注入(item 4/5)+ Phase E 已完成合入 main(`1155d21`);**per-session mesh 粒度已于 2026-06-10 完成**(见上节)。本期其余**主动留门**、下次可选。
+> **2026-06-10 评审**:deepseek-v4-pro + mimo-v2.5-pro 交叉评审本节(MiniMax-M3 因本机 `MINIMAX_API_KEY` 未配置 401 缺席)。原一致优先级 per-session mesh > E6 > 持久化,**per-session mesh 已落地**,剩余优先级 **🔴 fence 结果回喂 > E6 > 持久化**,另揪出 🔴(已核代码确认)。E6 评审建议**改姿势**:别等 agent 自发吐 fence(不可靠),改用**注入已知 fence** 测 relay+fence 管线。持久化评审强调**根本限制**:后端 agent 会话是持有 fd 的活进程、不可序列化,恢复只能"重 spawn + 重放",现实只能做 flow 级 checkpoint。
+
+- **🔴 fence 执行结果回喂发起 agent(评审新增,2026-06-10;非"可选"——卡自主编排)** —— 现状:agent 在围栏里 `/open` 出一个会话后**拿不到新会话的 label**。`control-wire.mjs:68-72` 把 label 只写进内部 `_depthMap`、拒绝原因只打 stderr,**无任何路径把结果回注 agent 下一轮**。后果:agent 能建会话但不知 label → 无法 `@它` 发消息,自主编排瞎操作。**已核代码确认(deepseek 提出)。** 方案:把每条 fence 命令的执行结果(成功 label / 失败 reason)在本 turn 完成点回注发起会话的下一轮上下文(类比 relay 的 `[…]` 注入)。建议**优先于下面三条**——这是 mesh 自主编排的核心价值所在。
 
 - **E6 围栏 + relay 协同 e2e** —— 验证 agent 在 ` ```synod ``` ` 围栏里吐 `/relay a->b`,在本 turn 完成点建链、下一 turn 起生效(沿用现有 relay 时序)。本期 Phase E 标 deferred(真 agent 下可靠构造较难);接线逻辑已由 Tier1 [`control-wire.test.mjs`](../test/control-wire.test.mjs) 覆盖。
-- **`/open --mesh` per-session 粒度** —— 现状 `--mesh` 是全局开关(评审 R5 拍板 MVP);留门给"非编排会话免注入、减 prompt 噪音":让 `/open` 单独指定是否注入 mesh 协议。透传链已留口(`session-manager.open({mesh})` 可显式传,当前 cli 不传)。
 - **持久化 / 恢复** —— flow 引擎的 `ctx` 已设计为纯数据可序列化(留门);整套会话 / flow 的持久化与崩溃恢复尚未做。

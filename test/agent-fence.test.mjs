@@ -94,6 +94,29 @@ describe("agent-fence whitelist", () => {
     assert.strictEqual(sm.calls.open[0].announce, false);
   });
 
+  it("/open --no-mesh propagates mesh:false to sm.open (de-escalation)", async () => {
+    const { dispatch, sm } = setup();
+    const r = await dispatch("/open --agent omp --no-mesh", { source: "agent-fence" });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(sm.calls.open.length, 1);
+    assert.strictEqual(sm.calls.open[0].mesh, false);
+  });
+
+  it("/open --mesh propagates mesh:true to sm.open (no escalation guard by design)", async () => {
+    const { dispatch, sm } = setup();
+    const r = await dispatch("/open --agent omp --mesh", { source: "agent-fence" });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(sm.calls.open.length, 1);
+    assert.strictEqual(sm.calls.open[0].mesh, true);
+  });
+
+  it("/open without mesh flag passes mesh:undefined (inherits session default)", async () => {
+    const { dispatch, sm } = setup();
+    await dispatch("/open --agent omp", { source: "agent-fence" });
+    assert.strictEqual(sm.calls.open.length, 1);
+    assert.strictEqual(sm.calls.open[0].mesh, undefined);
+  });
+
   it("@omp#1 hi → {ok:true}, enqueue called", async () => {
     const { dispatch, sm } = setup();
     const r = await dispatch("@omp#1 hi", { source: "agent-fence" });

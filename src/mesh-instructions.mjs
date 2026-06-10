@@ -38,7 +38,7 @@ turn completes.
 
 | Command | Purpose |
 |---------|---------|
-| \`/open --agent <omp|codex> [--model <M>]\` | Open a new sibling agent session |
+| \`/open --agent <omp|codex> [--model <M>] [--mesh\|--no-mesh]\` | Open a new sibling agent session. \`--mesh\`: the child may itself orchestrate (use when the session default is mesh-off); \`--no-mesh\`: a leaf worker that will not be prompted to orchestrate |
 | \`@<label> <message>\` | Send a message to a specific session (label e.g. \`omp#1\`) |
 | \`/relay <from>-><to>\` | Forward turn output from one session to another |
 

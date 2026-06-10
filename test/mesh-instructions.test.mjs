@@ -37,6 +37,14 @@ describe("MESH_INSTRUCTIONS fingerprints", () => {
     assert.match(text, /\/open --agent/);
   });
 
+  it("documents both --mesh and --no-mesh overrides for agents", () => {
+    assert.match(text, /--mesh/);
+    assert.match(text, /--no-mesh/);
+    // mesh is prompt-injection, not a capability gate: a leaf is only "not
+    // prompted to orchestrate", never "cannot" (the wire still scans its output).
+    assert.match(text, /not be prompted to orchestrate/);
+  });
+
   it("contains @ label syntax reference", () => {
     assert.match(text, /@<label>/);
   });

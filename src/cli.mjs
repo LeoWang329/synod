@@ -24,7 +24,7 @@ function parseArgs(argv) {
     model: undefined,
     effort: undefined,
     write: false,
-    mesh: false,
+    mesh: undefined, // tri-state: undefined → fall back to SYNOD_MESH env (see main())
     tasks: [],
     _unknown: null,
   };
@@ -66,7 +66,19 @@ function parseArgs(argv) {
         out.write = true;
         break;
       case "--mesh":
+        // Mirror parseOpenArgs: reject a conflicting flag, allow idempotent repeat.
+        if (out.mesh === false) {
+          out._unknown = "--mesh and --no-mesh are mutually exclusive";
+          return out;
+        }
         out.mesh = true;
+        break;
+      case "--no-mesh":
+        if (out.mesh === true) {
+          out._unknown = "--mesh and --no-mesh are mutually exclusive";
+          return out;
+        }
+        out.mesh = false;
         break;
       case "--task": {
         const v = argv[++i];
@@ -130,10 +142,11 @@ function printHelp(stdout = process.stdout) {
       "  --write               Allow file writes (default: read-only)",
       "  --task <agent>:<msg>  Run task non-interactively (repeatable)",
       "  --mesh                Inject orchestration skill into spawned agents (default: off)",
+      "  --no-mesh             Force mesh off, overriding the SYNOD_MESH env var",
       "  -h, --help            Show this help",
       "",
       "REPL commands:",
-      "  /open [--agent A] [--model M] [--effort E] [--write]   New session",
+      "  /open [--agent A] [--model M] [--effort E] [--write] [--mesh|--no-mesh]   New session",
       "  /use <label>          Switch current session",
       "  /sessions             List all sessions",
       "  @<label> <msg>        Send to a session",
@@ -285,7 +298,10 @@ async function main({
 
   const report = doctor();
   const cwd = path.resolve(process.cwd());
-  const mesh = args.mesh || meshFromEnv(env);
+  // Precedence: explicit --mesh/--no-mesh (true/false) > SYNOD_MESH env > off.
+  // `??` (not `||`) so an explicit --no-mesh (false) overrides the env instead
+  // of falling through to it.
+  const mesh = args.mesh ?? meshFromEnv(env);
 
   // ── Non-interactive ────────────────────────────────────────────────
   if (args.tasks.length > 0) {

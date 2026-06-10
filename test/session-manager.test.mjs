@@ -416,4 +416,38 @@ describe("createSessionManager", () => {
     assert.ok(label, "should open");
     assert.strictEqual(receivedMesh, false, "default mesh should be false");
   });
+
+  it("per-call mesh:false overrides defaults.mesh:true (explicit false wins over `??`)", async () => {
+    let receivedMesh;
+    const openBackend = async (opts) => {
+      receivedMesh = opts.mesh;
+      return new (await import("./helpers/fake-backend.mjs")).FakeSession(opts);
+    };
+    const sm = createSessionManager({
+      openBackend, stdout: captureStream(), stderr: captureStream(),
+      report: { omp: { available: true } },
+      cwd: "/test",
+      defaults: { mesh: true },
+    });
+    const label = await sm.open({ agent: "omp", mesh: false });
+    assert.ok(label, "should open");
+    assert.strictEqual(receivedMesh, false, "explicit mesh:false must override a mesh:true default");
+  });
+
+  it("per-call mesh:true overrides defaults.mesh:false", async () => {
+    let receivedMesh;
+    const openBackend = async (opts) => {
+      receivedMesh = opts.mesh;
+      return new (await import("./helpers/fake-backend.mjs")).FakeSession(opts);
+    };
+    const sm = createSessionManager({
+      openBackend, stdout: captureStream(), stderr: captureStream(),
+      report: { omp: { available: true } },
+      cwd: "/test",
+      defaults: { mesh: false },
+    });
+    const label = await sm.open({ agent: "omp", mesh: true });
+    assert.ok(label, "should open");
+    assert.strictEqual(receivedMesh, true, "explicit mesh:true must override a mesh:false default");
+  });
 });
