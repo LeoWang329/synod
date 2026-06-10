@@ -345,8 +345,14 @@ function terminateProcessTree(pid, signal = "SIGTERM", { group = false } = {}) {
   // fake 会话注入路径也会把 _detached 置 true,但其随机 pid(90000+)
   // 不是真实组长:kill(-pid) 抛 ESRCH/EPERM 被 catch,随即回退下面的
   // 旧递归路径——与改动前 process.kill(pid) 的风险面一致,无新增。
+  // 仅当目标 pid 仍存活才尝试组杀:对已死(含 fake 随机)pid 组杀无意义,
+  // 且能消除"随机 pid 恰为某真实进程组 PGID"的理论误伤窗口。
   if (group) {
-    try { process.kill(-pid, signal); return true; } catch {}
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; } catch {}
+    if (alive) {
+      try { process.kill(-pid, signal); return true; } catch {}
+    }
   }
   for (const childPid of listChildPids(pid))
     terminateProcessTree(childPid, signal);

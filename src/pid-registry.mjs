@@ -52,17 +52,21 @@ function etimeSeconds(pid) {
 
 export function writePidRecord({ sessionId, pid, bin }) {
   if (!Number.isInteger(pid) || pid <= 1) return null;
-  fs.mkdirSync(PID_DIR, { recursive: true });
-  const file = path.join(PID_DIR, `${sessionId}.json`);
-  fs.writeFileSync(file, JSON.stringify({
-    sessionId,
-    pid,
-    bin: bin ?? null,
-    ownerPid: process.pid,
-    startedAt: Date.now(),
-    comm: psComm(pid),
-  }));
-  return file;
+  try {
+    fs.mkdirSync(PID_DIR, { recursive: true });
+    const file = path.join(PID_DIR, `${sessionId}.json`);
+    fs.writeFileSync(file, JSON.stringify({
+      sessionId,
+      pid,
+      bin: bin ?? null,
+      ownerPid: process.pid,
+      startedAt: Date.now(),
+      comm: psComm(pid),
+    }));
+    return file;
+  } catch {
+    return null;     // best-effort telemetry — never break session creation
+  }
 }
 
 export function removePidRecord(sessionId) {

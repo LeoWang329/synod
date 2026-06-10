@@ -33,22 +33,24 @@ function setup(opts = {}) {
 }
 
 test("SIGTERM → abort + close 全部会话,exit(143)", async () => {
-  const { proc, exited } = setup();
+  const { proc, exited, writes } = setup();
   const s = makeStubSession();
   trackSession(s);
   proc.emit("SIGTERM");
   assert.equal(await exited, 143);
   assert.equal(s.aborted, true);
   assert.equal(s.closed, true);
+  assert.ok(writes.join("").includes("terminating, cleaning up"), "优雅路径应提示 terminating");
 });
 
 test("SIGHUP → 同优雅路径,exit(129)", async () => {
-  const { proc, exited } = setup();
+  const { proc, exited, writes } = setup();
   const s = makeStubSession();
   trackSession(s);
   proc.emit("SIGHUP");
   assert.equal(await exited, 129);
   assert.equal(s.closed, true);
+  assert.ok(writes.join("").includes("terminating, cleaning up"), "优雅路径应提示 terminating");
 });
 
 test("uncaughtException → 同步 close(不 abort),exit(1)", async () => {

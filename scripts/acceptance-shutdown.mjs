@@ -15,10 +15,21 @@ const results = [];
 const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function childPidsOf(pid) {
+function directChildren(pid) {
   const r = spawnSync("pgrep", ["-P", String(pid)], { encoding: "utf8" });
   if (r.status !== 0 || !r.stdout) return [];
   return r.stdout.split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 1);
+}
+
+// 递归收集整棵后代树(直接子 + 孙 + ...),用于"无残留"的强断言:
+// Task 7 的目标就是孙进程不逃逸,只查直接子会让孙存活时仍误判通过。
+function descendantsOf(pid, seen = new Set()) {
+  for (const c of directChildren(pid)) {
+    if (seen.has(c)) continue;
+    seen.add(c);
+    descendantsOf(c, seen);
+  }
+  return [...seen];
 }
 
 async function scenario(name, signal) {
@@ -39,7 +50,7 @@ async function scenario(name, signal) {
     return;
   }
 
-  const agents = childPidsOf(cli.pid);
+  const agents = descendantsOf(cli.pid);
   if (agents.length === 0) {
     results.push([name, false, "未找到 agent 子进程"]);
     try { cli.kill("SIGKILL"); } catch {}
