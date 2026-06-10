@@ -389,6 +389,34 @@ describe("openBackend omp contract", () => {
 
     await session.close();
   });
+
+  // Regression: multi-segment turn (tool-call interruption) must NOT truncate.
+  it("result().text includes all segments across turn_start boundaries", async () => {
+    const proc = makeFakeOmpProc({
+      responseSegments: [
+        ["code ", "segment "],
+        ["summary ", "segment"],
+      ],
+    });
+    const session = await openBackend({
+      agent: "omp",
+      cwd: "/tmp",
+      spawnImpl: () => proc,
+    });
+
+    await session.send("do something with a tool call");
+    const res = await session.result();
+
+    // Before fix: result().text was "summary segment" (last segment only).
+    // After fix: must include both segments.
+    assert.strictEqual(
+      res.text,
+      "code segment summary segment",
+      "result().text must concatenate all segments across turn_start boundaries",
+    );
+
+    await session.close();
+  });
 });
 
 // ── CodexSession contract (fake app-server, no real codex startup) ──────

@@ -401,6 +401,10 @@ class OmpSession extends EventEmitter {
     this.status = "starting";
     this.isStreaming = false;
     this.lastAssistantText = "";
+    // Send-level accumulator: never reset mid-send (e.g. on turn_start/agent_start
+    // during tool calls), so result().text always contains every assistant text
+    // segment produced across all turns within a single send().
+    this.turnText = "";
     this.lastError = null;
     // Set true once the current turn is observed actually streaming (agent_start /
     // stream deltas / a live isStreaming reading); waitIdle won't accept the idle
@@ -622,6 +626,9 @@ class OmpSession extends EventEmitter {
         );
         // Synod: emit stream delta
         this.emit("delta", update.delta);
+        // Send-level accumulator — survives turn_start/agent_start resets
+        // so result().text sees all segments across tool-call interruptions.
+        this.turnText = clampText(this.turnText + update.delta);
       }
       if (typeof update?.text === "string") {
         this.lastAssistantText = clampText(update.text);
@@ -655,6 +662,7 @@ class OmpSession extends EventEmitter {
     // Reset before prompting so waitIdle below ignores the pre-streaming idle window
     // (a stale idle reading from before this turn actually starts).
     this.turnStarted = false;
+    this.turnText = "";
     this.#setStatus("running", true, { source: "send" });
     await this.request("prompt", { message: String(message) });
     if (options.wait) {
@@ -689,13 +697,20 @@ class OmpSession extends EventEmitter {
   }
 
   async result() {
-    let text = this.lastAssistantText;
-    try {
-      const response = await this.request("get_last_assistant_text");
-      if (response.data && typeof response.data.text === "string")
-        text = response.data.text;
-    } catch {
-      // Keep accumulated stream text when the helper command is unavailable.
+    // Prefer the send-level accumulator (survives turn_start/agent_start resets
+    // during tool-call interruptions) so multi-segment turns aren't truncated.
+    let text = this.turnText;
+    if (!text) {
+      // Fallback: try the RPC helper (get_last_assistant_text), then the
+      // per-turn accumulator (lastAssistantText) when turnText is empty.
+      text = this.lastAssistantText;
+      try {
+        const response = await this.request("get_last_assistant_text");
+        if (response.data && typeof response.data.text === "string")
+          text = response.data.text;
+      } catch {
+        // Keep accumulated stream text when the helper command is unavailable.
+      }
     }
     this.lastAssistantText = clampText(text || this.lastAssistantText || "");
     return {

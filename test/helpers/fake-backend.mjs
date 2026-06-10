@@ -100,10 +100,13 @@ export function makeFakeOmpProc(opts = {}) {
     errorMsgAfterReady = null,  // push error message to stdout after ready
     failPrompt = false,         // respond to prompt with success:false
     noGetLastAssistantText = false, // respond to get_last_assistant_text with empty response (no data)
+    // Multi-segment: each inner array is a segment; turn_start emitted between them.
+    // get_last_assistant_text returns only the LAST segment's text (simulates the bug).
+    responseSegments = null,    // string[][] — overrides responseDeltas when set
   } = opts;
 
   let accumulatedText = "";
-
+  let lastSegmentText = "";  // for get_last_assistant_text when multi-segment
   // stdin: writable that collects written JSON lines and auto-responds
   const stdin = new Writable({
     write(chunk, encoding, callback) {
@@ -177,20 +180,36 @@ export function makeFakeOmpProc(opts = {}) {
       // Acknowledge the prompt
       pushLine({ id: msg.id, type: "response" });
       // Stream the response
+      const segments = responseSegments || [responseDeltas];
+      accumulatedText = "";
+      lastSegmentText = "";
       pushLine({ type: "agent_start" });
-      for (const delta of responseDeltas) {
-        accumulatedText += delta;
-        pushLine({
-          type: "message_update",
-          message: { type: "text_delta", delta },
-        });
+      for (let si = 0; si < segments.length; si++) {
+        const deltas = segments[si];
+        if (si > 0) {
+          // Simulate a tool-call interruption: new turn starts, dropping
+          // lastAssistantText but NOT turnText (the fix's accumulator).
+          pushLine({ type: "turn_start" });
+        }
+        lastSegmentText = "";
+        for (const delta of deltas) {
+          lastSegmentText += delta;
+          accumulatedText += delta;
+          pushLine({
+            type: "message_update",
+            message: { type: "text_delta", delta },
+          });
+        }
       }
       pushLine({ type: "agent_end" });
     } else if (msg.type === "get_last_assistant_text") {
       if (noGetLastAssistantText) {
         respondEmpty(msg.id);
       } else {
-        respond(msg.id, { text: accumulatedText });
+        // When multi-segment, return only the LAST segment's text (simulates
+        // the real OMP's get_last_assistant_text behaviour — the bug).
+        const text = responseSegments ? lastSegmentText : accumulatedText;
+        respond(msg.id, { text });
       }
     } else if (msg.type === "get_state") {
       respond(msg.id, {
