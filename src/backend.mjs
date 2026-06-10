@@ -37,6 +37,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import { trackSession, untrackSession } from "./shutdown.mjs";
 
 // ── Constants ────────────────────────────────────────────────────────
 // 0.5.1:13–36
@@ -794,6 +795,7 @@ class OmpSession extends EventEmitter {
   }
 
   close() {
+    untrackSession(this);
     this.#setStatus("closed", false, { source: "close" });
     // Reject any in-flight RPCs (send/state/result waiters) now: once status is "closed"
     // the proc "close" handler early-returns and won't reject them, so they'd hang forever.
@@ -1456,6 +1458,7 @@ class CodexSession extends EventEmitter {
   }
 
   close() {
+    untrackSession(this);
     this.#setStatus("closed", false, { source: "close" });
     try {
       this.proc?.stdin?.end();
@@ -1507,6 +1510,7 @@ export async function openBackend({
     try { await session.close(); } catch {}
     throw err;
   }
+  trackSession(session);
   return session;
 }
 
