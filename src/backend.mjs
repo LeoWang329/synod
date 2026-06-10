@@ -365,14 +365,14 @@ function terminateProcessTree(pid, signal = "SIGTERM", { group = false } = {}) {
 // spawned via proc.exitCode / proc.signalCode (both null only while it is still
 // running), so gating on those — and cancelling the timer when the child exits in
 // time — makes a recycled-PID kill impossible.
-function scheduleForceKill(proc, graceMs = 3000) {
+function scheduleForceKill(proc, graceMs = 3000, { group = false } = {}) {
   const pid = proc?.pid;
   if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return;
   const timer = setTimeout(() => {
     // Strict null on BOTH fields = "the child we spawned is still running".
     // (A fake test proc has no signalCode, so it is correctly excluded here.)
     if (proc.exitCode === null && proc.signalCode === null) {
-      terminateProcessTree(pid, "SIGKILL");
+      terminateProcessTree(pid, "SIGKILL", { group });
     }
   }, graceMs);
   timer.unref?.();
@@ -836,7 +836,7 @@ class OmpSession extends EventEmitter {
     // (In the CLI's immediate-exit paths the unref'd 3s timer simply never fires,
     // which is fine: win32 already killed synchronously, POSIX relies on SIGTERM.)
     terminateProcessTree(this.proc?.pid, "SIGTERM", { group: this._detached === true });
-    scheduleForceKill(this.proc);
+    scheduleForceKill(this.proc, 3000, { group: this._detached === true });
     return { closed: true, session_id: this.id };
   }
 }
@@ -1493,7 +1493,7 @@ class CodexSession extends EventEmitter {
     this.#rejectAll(new Error("session closed"));
     const pid = this.proc?.pid;
     terminateProcessTree(pid, "SIGTERM", { group: this._detached === true });
-    scheduleForceKill(this.proc);
+    scheduleForceKill(this.proc, 3000, { group: this._detached === true });
     return { closed: true, session_id: this.id };
   }
 }
@@ -1539,7 +1539,7 @@ export async function openBackend({
   return session;
 }
 
-export { terminateProcessTree };
+export { terminateProcessTree, scheduleForceKill };
 
 /**
  * Check availability of omp and codex on this machine.
