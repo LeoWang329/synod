@@ -99,6 +99,8 @@ export function makeFakeOmpProc(opts = {}) {
     responseDeltas = ["Hello ", "from ", "omp"],
     errorMsgAfterReady = null,  // push error message to stdout after ready
     failPrompt = false,         // respond to prompt with success:false
+    stallTurn = false,          // ack prompt + agent_start,然后永不结束 turn
+    dropGetState = false,       // 永不应答 get_state(模拟 RPC wedge)
     noGetLastAssistantText = false, // respond to get_last_assistant_text with empty response (no data)
     // Multi-segment: each inner array is a segment; turn_start emitted between them.
     // get_last_assistant_text returns only the LAST segment's text (simulates the bug).
@@ -168,6 +170,11 @@ export function makeFakeOmpProc(opts = {}) {
 
   function handleMessage(msg) {
     if (msg.type === "prompt") {
+      if (stallTurn) {
+        pushLine({ id: msg.id, type: "response" });
+        pushLine({ type: "agent_start" });
+        return;
+      }
       if (failPrompt) {
         pushLine({
           id: msg.id,
@@ -212,6 +219,7 @@ export function makeFakeOmpProc(opts = {}) {
         respond(msg.id, { text });
       }
     } else if (msg.type === "get_state") {
+      if (dropGetState) return;   // 模拟 wedge:请求石沉大海
       respond(msg.id, {
         isStreaming: false,
         queuedMessageCount: 0,

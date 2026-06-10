@@ -58,6 +58,11 @@ const IS_WINDOWS = process.platform === "win32";
 const OMP_READY_TIMEOUT_MS =
   Number(process.env.SYNOD_OMP_READY_TIMEOUT_MS) || 60_000;
 
+// waitIdle 单次 get_state 探测的超时:防 omp 进程活着但 RPC 不应答
+// (wedge)时 `await this.state()` 永不返回、外层 while 的总超时检查
+// 永远没机会执行(P0-5)。探测超时按"本轮失败"处理,继续轮询。
+const OMP_STATE_PROBE_TIMEOUT_MS = 5000;
+
 const AGENTS = {
   omp: {
     label: "Oh My Pi",
@@ -728,7 +733,7 @@ class OmpSession extends EventEmitter {
     return { aborted: true, session_id: this.id };
   }
 
-  async waitIdle(timeoutMs) {
+  async waitIdle(timeoutMs, { probeTimeoutMs = OMP_STATE_PROBE_TIMEOUT_MS } = {}) {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
       await sleep(750);
@@ -739,7 +744,10 @@ class OmpSession extends EventEmitter {
         );
       }
       try {
-        const state = await this.state();
+        const state = await withTimeout(
+          this.state(), probeTimeoutMs,
+          `state() probe for ${this.id} timed out`,
+        );
         const idle = !state?.isStreaming && !state?.queuedMessageCount;
         // Only accept idle once THIS turn has actually started, observed via the
         // agent_start event (turnStarted, reset at send). A live isStreaming reading is
