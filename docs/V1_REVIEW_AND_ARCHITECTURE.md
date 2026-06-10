@@ -469,16 +469,18 @@ Synod 实际有**三**种一等使用面(第三种是用户要求保留的现有
 
 ## 6. 附录:bug 速查索引
 
-| 级别 | # | 一句话 | 定位 |
-|---|---|---|---|
-| P0 | 1 | uncaughtException/unhandledRejection 不清理子进程 | cli.mjs:490 |
-| P0 | 2 | flow 会话不在 SIGINT 清理范围;flow.mjs 单跑无任何信号处理 | cli.mjs:451; flow.mjs:323 |
-| P0 | 3 | 无 SIGTERM/SIGHUP 处理器 | cli.mjs:444-501 |
-| P0 | 4 | POSIX 退出路径 SIGKILL 兜底不生效(unref 定时器+立即 exit) | backend.mjs:807-814 |
-| P0 | 5 | OmpSession.waitIdle 内 state() 无超时 → send(wait) 挂死 | backend.mjs:741 |
-| P1 | 6 | OmpSession.send 无并发守卫 + reuse 池先入池后发送 → 并发数据损坏 | backend.mjs:655; flow/api/agent.mjs:125 |
-| P1 | 7 | disposeRun 后在飞 agent() 复活 run state → 会话泄漏 | flow/runtime.mjs:121,165 |
-| P1 | 8 | REPL /flow + approve 双 readline 抢 stdin | flow/runtime.mjs:80; cli.mjs:168 |
+> ✅ **阶段 0(进程治理)已修讫(2026-06-10,分支 `process-governance`)**:P0-1..5 + P1-6 + P1-7 全部修复并经单测 + 真 omp e2e(S1 SIGTERM / S2 SIGINT 无残留)+ 手工 kill-9/`--reap` 验证。详见 `docs/V1.md` 阶段 0 看板。
+
+| 级别 | # | 一句话 | 定位 | 状态 |
+|---|---|---|---|---|
+| P0 | 1 | uncaughtException/unhandledRejection 不清理子进程 | cli.mjs:490 | ✅ 已修 d3aab8a(统一 shutdown 矩阵) |
+| P0 | 2 | flow 会话不在 SIGINT 清理范围;flow.mjs 单跑无任何信号处理 | cli.mjs:451; flow.mjs:323 | ✅ 已修 c584084+d3aab8a(单点 track + 装处理器) |
+| P0 | 3 | 无 SIGTERM/SIGHUP 处理器 | cli.mjs:444-501 | ✅ 已修 fb1c502+d3aab8a |
+| P0 | 4 | POSIX 退出路径 SIGKILL 兜底不生效(unref 定时器+立即 exit) | backend.mjs:807-814 | ✅ 已修 8f2feae+3cfdf64+13ede93(同步硬清理+detached 组杀+兜底带组) |
+| P0 | 5 | OmpSession.waitIdle 内 state() 无超时 → send(wait) 挂死 | backend.mjs:741 | ✅ 已修 6c3ffeb |
+| P1 | 6 | OmpSession.send 无并发守卫 + reuse 池先入池后发送 → 并发数据损坏 | backend.mjs:655; flow/api/agent.mjs:125 | ✅ 已修 6e37966(send 守卫)+a886fcf(reuse 串行链) |
+| P1 | 7 | disposeRun 后在飞 agent() 复活 run state → 会话泄漏 | flow/runtime.mjs:121,165 | ✅ 已修 c76c4a0(disposed 标志) |
+| P1 | 8 | REPL /flow + approve 双 readline 抢 stdin | flow/runtime.mjs:80; cli.mjs:168 | 阶段 1C |
 | P1 | 9 | fence /open 劫持 human 当前会话 | session-manager.mjs:172 |
 | P1 | 10 | fence 结果不回传发起 agent(leader 不知子会话 label) | control-wire.mjs:68; mesh-instructions.mjs:56 |
 | P1 | 11 | 退出时在飞 fence dispatch 可在 closeAll 后开新会话 | control-wire.mjs:55 |
