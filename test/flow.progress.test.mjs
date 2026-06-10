@@ -7,6 +7,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { createRuntime } from "../src/flow/runtime.mjs";
+import { createDefaultProgressSink } from "../src/flow.mjs";
 import { fakeOpenBackend } from "./helpers/fake-backend.mjs";
 
 /** In-memory filesystem sink (no real disk). */
@@ -136,6 +137,13 @@ describe("progress visibility", () => {
       "no residual delta listener after second call",
     );
 
+    // start fires on every send, including the reused second call
+    assert.strictEqual(
+      sink.events.filter((e) => e.type === "start").length,
+      2,
+      "each agent() send emits a start event (incl. reuse)",
+    );
+
     // DisposeRun closes the reused session
     await runtime.disposeRun(ctx);
     assert.strictEqual(capturedSession._closed, true, "disposeRun must close reused session");
@@ -248,5 +256,58 @@ describe("progress visibility", () => {
         `opening at index ${idx} must be before first delta at index ${firstDeltaIdx}`,
       );
     }
+  });
+});
+
+// ── default stdout sink: per-line prefix + agent-boundary line breaks ───────
+
+/** Capture every write into a single string. */
+function captureStdout() {
+  let buf = "";
+  return {
+    write(s) { buf += s; },
+    get out() { return buf; },
+  };
+}
+
+describe("default progress sink — line boundaries", () => {
+  it("multi-line delta: every line gets its [agent:model] prefix", () => {
+    const cap = captureStdout();
+    const sink = createDefaultProgressSink(cap);
+    sink.emit({ type: "start", agent: "omp", model: "m" });
+    sink.emit({ type: "delta", agent: "omp", model: "m", text: "a\nb\n" });
+    assert.strictEqual(cap.out, "[omp:m] a\n[omp:m] b\n");
+  });
+
+  it("reuse seam: 2nd agent (no opening, prev line unterminated) starts a fresh prefixed line", () => {
+    const cap = captureStdout();
+    const sink = createDefaultProgressSink(cap);
+    // agent A leaves a dangling (newline-less) line
+    sink.emit({ type: "start", agent: "omp", model: "ds" });
+    sink.emit({ type: "delta", agent: "omp", model: "ds", text: "question" });
+    // agent B reuses its session → only a start event, no opening
+    sink.emit({ type: "start", agent: "omp", model: "mm" });
+    sink.emit({ type: "delta", agent: "omp", model: "mm", text: "answer" });
+    // B must NOT run onto A's tail; it gets a newline + its own prefix
+    assert.strictEqual(cap.out, "[omp:ds] question\n[omp:mm] answer");
+  });
+
+  it("opening also breaks a dangling line first", () => {
+    const cap = captureStdout();
+    const sink = createDefaultProgressSink(cap);
+    sink.emit({ type: "start", agent: "omp", model: "ds" });
+    sink.emit({ type: "delta", agent: "omp", model: "ds", text: "q" });
+    sink.emit({ type: "opening", agent: "omp", model: "mm" });
+    assert.strictEqual(cap.out, "[omp:ds] q\n[omp:mm] opening...\n");
+  });
+
+  it("start is a no-op when already at line start (no spurious blank line)", () => {
+    const cap = captureStdout();
+    const sink = createDefaultProgressSink(cap);
+    sink.emit({ type: "start", agent: "omp", model: "m" });
+    sink.emit({ type: "delta", agent: "omp", model: "m", text: "x\n" });
+    sink.emit({ type: "start", agent: "omp", model: "m" }); // already at line start
+    sink.emit({ type: "delta", agent: "omp", model: "m", text: "y\n" });
+    assert.strictEqual(cap.out, "[omp:m] x\n[omp:m] y\n");
   });
 });

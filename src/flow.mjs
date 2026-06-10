@@ -113,20 +113,35 @@ function printHelp(stdout) {
 /**
  * Create the default stdout progress sink.
  *
- * Writes to stdout with `[agent:model]` prefix.  No line buffering
- * (qa-loop is serial; YAGNI).  Silent for "started" / "end" types.
+ * Writes to stdout with `[agent:model]` prefix, one prefix per line.  No line
+ * buffering (qa-loop is serial; YAGNI).  `opening`/`start` break any dangling
+ * line so each agent's turn begins fresh (matters on reuse, where no `opening`
+ * fires).  `end` is silent.
  *
  * @param {NodeJS.WritableStream} stdout
  * @returns {{ emit: (event: object) => void }}
  */
-function createDefaultProgressSink(stdout) {
+export function createDefaultProgressSink(stdout) {
   let atLineStart = true;
+  // Close a dangling (newline-less) line from the previous agent so the next
+  // one starts on its own prefixed line.  No-op if already at line start.
+  const freshLine = () => {
+    if (!atLineStart) {
+      stdout.write("\n");
+      atLineStart = true;
+    }
+  };
   return {
     emit(event) {
       const label = event.model ? `${event.agent}:${event.model}` : event.agent;
       if (event.type === "opening") {
+        freshLine();
         stdout.write(`[${label}] opening...\n`);
         atLineStart = true;
+      } else if (event.type === "start") {
+        // Fires on EVERY send (incl. reuse, where no "opening" runs).  Just
+        // break a dangling line; the prefix is written lazily by first delta.
+        freshLine();
       } else if (event.type === "delta" && event.text) {
         const t = event.text;
         let out = "";

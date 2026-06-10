@@ -143,6 +143,14 @@ export function createAgent({
         }
       };
       session.on("delta", onDelta);
+      // Signal turn start on EVERY send (incl. reuse, where no "opening"
+      // fires) so the sink can begin each agent's output on a fresh,
+      // prefixed line instead of running onto the previous agent's tail.
+      try {
+        sink.emit({ type: "start", agent: agentName, model });
+      } catch (e) {
+        runState.lastSinkError = e;
+      }
     }
 
     // ── Send + log + close ────────────────────────────────────────
