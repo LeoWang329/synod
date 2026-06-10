@@ -2,7 +2,7 @@
 
 > 写 `workflows/*.mjs` 之前**必读**。给人,也给被派来写 flow 的 agent。
 > 配套设计文档:[`WORKFLOW_ENGINE.md`](WORKFLOW_ENGINE.md)。Synod 扫描 `workflows/` 时会按本规则**校验**,违规的 flow 直接拒绝加载。
-> 写于 2026-06-07。
+> 写于 2026-06-07,**最后更新 2026-06-10(补 `backtrack` 原语 + `reuse` 说明)**。
 
 ## 0. 心智模型
 
@@ -41,6 +41,7 @@ import { agent, agentLoop, bash, approve, reviseWithHuman, defer, runWorkflow } 
 |---|---|
 | `agent(ctx, {agent, model, prompt, effort?, reuse?})` | 调一次 agent,await 拿文本结果 |
 | `agentLoop(ctx, {agent, prompt, until, maxTurns})` | agent 多轮自迭代,到 `until` 或 `maxTurns` 止 |
+| `backtrack(ctx, {produce, review, buildPrompt, initialPrompt?, maxTurns})` | 跨节点回退的封装:产出→审→不过把反馈喂回重试,拿 `{output, passed, attempts}` |
 | `bash(ctx, cmd, {cwd?})` | 跑命令,拿 `{stdout, stderr, code}` |
 | `approve(ctx, {title, body})` | 人工审批,拿 `{accepted, feedback?, aborted?}` |
 | `reviseWithHuman(ctx, draft, {agent?, model?})` | 人在环修订环(产出→人给自然语言反馈→改→定稿) |
@@ -49,6 +50,8 @@ import { agent, agentLoop, bash, approve, reviseWithHuman, defer, runWorkflow } 
 
 - `agent` ∈ `{omp, codex}`(后端);`model` 是带 provider 前缀的串(`deepseek/deepseek-v4-pro`、`minimax-code-cn/MiniMax-M3`)。
 - 所有原语**自动写 run log**,你不用手动记。
+- **`reuse: true`**(`agent` 的可选项,也可用在 `backtrack` 的 `produce`/`review` 里):对**同一 `agent:model`** 的多次调用复用同一条后端会话,省去反复冷启动。⚠️ **复用的是会话上下文(同一 thread 历史),不是纯进程池**——后续调用看得到前面轮次的对话。要"干净的独立回合"就**别**开(默认每次新开新关);要"评审者记得之前出的题"这类连续语境才开。`qa-loop` 即用此法把冷启动从 3–7 次降到 2 次。
+- **进度显示不归 flow 管**:逐字流式由运行入口注入(REPL `/flow` 默认开,`node src/flow.mjs` 加 `--progress`),flow 里**不要**自己写输出 delta 的代码。
 
 ## 4. 硬规则(违反 = 被扫描拒绝 / 一定出 bug)
 
