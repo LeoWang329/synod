@@ -450,10 +450,14 @@ const _isMain = isEntrypoint(import.meta.url);
 
 if (_isMain) {
   installShutdownHandlers({ interactiveSigint: true });
-  // 启动顺扫:收割上次崩溃残留的孤儿(尽力而为,绝不阻断启动)
-  import("./pid-registry.mjs")
-    .then(({ reapOrphans }) => { try { reapOrphans({ stderr: process.stderr }); } catch {} })
-    .catch(() => {});
+  // 启动顺扫:收割上次崩溃残留的孤儿(尽力而为,绝不阻断启动)。
+  // 显式 `--reap` 命令例外:那条路径在 main() 里独占收割并打印准确摘要,
+  // 此处再扫会抢先把孤儿收掉、令命令摘要失真为 reaped=0。
+  if (!process.argv.includes("--reap")) {
+    import("./pid-registry.mjs")
+      .then(({ reapOrphans }) => { try { reapOrphans({ stderr: process.stderr }); } catch {} })
+      .catch(() => {});
+  }
 
   main()
     .then((code) => process.exit(code ?? 0))
