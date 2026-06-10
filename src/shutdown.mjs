@@ -52,3 +52,67 @@ export function closeAllLiveSessionsSync({ graceMs = 500 } = {}) {
     try { process.kill(pid, "SIGKILL"); } catch {}
   }
 }
+
+/**
+ * 优雅一轮:并行 abort(限时)→ 同步硬清理。信号路径用。
+ */
+export async function gracefulShutdown({ abortTimeoutMs = 3000, graceMs = 500 } = {}) {
+  await Promise.all(liveSessions().map((s) =>
+    Promise.race([
+      (async () => { try { await s.abort(); } catch {} })(),
+      new Promise((r) => { const t = setTimeout(r, abortTimeoutMs); t.unref?.(); }),
+    ]),
+  ));
+  closeAllLiveSessionsSync({ graceMs });
+}
+
+/**
+ * 统一退出矩阵(修 V1 文档 P0-1 / P0-3):
+ *   SIGTERM → 优雅 → exit(143)        SIGHUP → 优雅 → exit(129)
+ *   uncaughtException / unhandledRejection → 同步硬清理 → exit(1)
+ *   SIGINT:interactiveSigint=true 保留 cli 原"一次优雅 exit(0) /
+ *   二次强杀 exit(1)"语义;false(flow 单跑)一次优雅 exit(130)。
+ *
+ * proc/stderr/exit 可注入以便单测;生产调用方只传 interactiveSigint。
+ */
+export function installShutdownHandlers({
+  proc = process,
+  stderr = process.stderr,
+  exit = (code) => process.exit(code),
+  interactiveSigint = false,
+} = {}) {
+  proc.on("uncaughtException", (err) => {
+    stderr.write(`synod: uncaught: ${err.stack || err.message}\n`);
+    closeAllLiveSessionsSync();
+    exit(1);
+  });
+  proc.on("unhandledRejection", (reason) => {
+    const msg = reason instanceof Error ? (reason.stack || reason.message) : String(reason);
+    stderr.write(`synod: unhandled rejection: ${msg}\n`);
+    closeAllLiveSessionsSync();
+    exit(1);
+  });
+  const graceful = (code) => () => {
+    stderr.write("\nsynod: terminating, cleaning up...\n");
+    gracefulShutdown().finally(() => exit(code));
+  };
+  proc.on("SIGTERM", graceful(143));
+  proc.on("SIGHUP", graceful(129));
+
+  let sigintCount = 0;
+  proc.on("SIGINT", () => {
+    sigintCount += 1;
+    if (liveSessions().length === 0) {
+      exit(interactiveSigint ? 0 : 130);
+      return;
+    }
+    if (sigintCount > 1) {
+      stderr.write("\nForce exiting...\n");
+      closeAllLiveSessionsSync();
+      exit(1);
+      return;
+    }
+    stderr.write("\nInterrupted. Cleaning up...\n");
+    gracefulShutdown().finally(() => exit(interactiveSigint ? 0 : 130));
+  });
+}
