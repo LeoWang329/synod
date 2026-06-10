@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
+import { resolve } from "node:path";
 import { openBackend } from "../src/backend.mjs";
 import { makeFakeOmpProc } from "./helpers/fake-backend.mjs";
 import { MESH_INSTRUCTIONS } from "../src/mesh-instructions.mjs";
@@ -443,7 +444,7 @@ describe("CodexSession mesh injection", () => {
     assert.ok(!("developerInstructions" in msg.params),
       "mesh:false must not include developerInstructions");
     // Existing fields must be present
-    assert.strictEqual(msg.params.cwd, "/tmp");
+    assert.strictEqual(msg.params.cwd, resolve("/tmp"));
     assert.strictEqual(msg.params.ephemeral, true);
     assert.strictEqual(msg.params.sandbox, "read-only");
   });
@@ -465,7 +466,7 @@ describe("CodexSession mesh injection", () => {
     assert.strictEqual(msg.params.developerInstructions, MESH_INSTRUCTIONS,
       "developerInstructions must match MESH_INSTRUCTIONS exactly");
     // Existing fields still present
-    assert.strictEqual(msg.params.cwd, "/tmp");
+    assert.strictEqual(msg.params.cwd, resolve("/tmp"));
     assert.strictEqual(msg.params.ephemeral, true);
     assert.strictEqual(msg.params.sandbox, "read-only");
     assert.strictEqual(msg.params.serviceName, "agent_bridge");
