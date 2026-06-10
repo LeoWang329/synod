@@ -31,7 +31,7 @@ import { MESH_INSTRUCTIONS } from "./mesh-instructions.mjs";
 //   - pushEvent(this, ev) → #emit(ev) emits 'event'
 //   - Stream delta emits 'delta' at accumulation points
 
-import { spawn as _defaultSpawn, spawnSync } from "node:child_process";
+import { spawn as _defaultSpawn, spawnSync, ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -485,7 +485,7 @@ class OmpSession extends EventEmitter {
       windowsHide: true,
       detached: !IS_WINDOWS,
     });
-    this._detached = !IS_WINDOWS;
+    this._detached = !IS_WINDOWS && this.proc instanceof ChildProcess;
     appendLog(
       this.logFile,
       `[agent-bridge] spawned OMP pid=${this.proc.pid}\n`,
@@ -897,7 +897,7 @@ class CodexSession extends EventEmitter {
       windowsHide: true,
       detached: !IS_WINDOWS,
     });
-    this._detached = !IS_WINDOWS;
+    this._detached = !IS_WINDOWS && this.proc instanceof ChildProcess;
     appendLog(
       this.logFile,
       `[agent-bridge] spawned codex app-server pid=${this.proc.pid}\n`,

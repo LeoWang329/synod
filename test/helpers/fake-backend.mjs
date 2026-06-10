@@ -146,7 +146,12 @@ export function makeFakeOmpProc(opts = {}) {
   proc.stdin = stdin;
   proc.stdout = stdout;
   proc.stderr = stderr;
-  proc.pid = 90000 + Math.floor(Math.random() * 10000);
+  // Fakes back no real OS process, so they must NOT advertise a kill-triggering
+  // pid: every kill/record site guards on Number.isInteger(pid), so a null pid
+  // makes terminateProcessTree / scheduleForceKill / writePidRecord no-op for
+  // fakes — eliminating any chance of signalling an unrelated real pid that a
+  // fabricated 90000+ value might have collided with.
+  proc.pid = null;
   proc.exitCode = null;
 
   const origEnd = stdin.end.bind(stdin);

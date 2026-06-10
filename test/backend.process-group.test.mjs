@@ -46,3 +46,14 @@ test("terminateProcessTree({group:true}) 杀死整个进程组(含孙进程)",
   const alive = await pollDead([child.pid, gpid], 2000);
   assert.deepEqual(alive, []);
 });
+
+test("注入的 fake spawn 不被授权组杀(_detached=false, 无真实 pid)", async () => {
+  const session = await openBackend({
+    agent: "omp", cwd: process.cwd(),
+    spawnImpl: () => makeFakeOmpProc(),
+  });
+  assert.equal(session._detached, false, "fake 非 ChildProcess,不得授权组杀");
+  assert.equal(session.proc.pid ?? null, null, "fake 无真实 OS pid");
+  session.close();   // 不得抛、不得对任何真实进程发信号
+  assert.equal(session.status, "closed");
+});
