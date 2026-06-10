@@ -23,6 +23,7 @@ import { createRuntime } from "./flow/runtime.mjs";
 import { discoverFlows, loadFlow } from "./flow/loader.mjs";
 import { runFlow } from "./flow/runner.mjs";
 import { openBackend } from "./backend.mjs";
+import { installShutdownHandlers, closeAllLiveSessionsSync } from "./shutdown.mjs";
 
 // ── CLI parsing ──────────────────────────────────────────────────────────
 
@@ -321,10 +322,12 @@ function isEntrypoint(metaUrl) {
 const _isMain = isEntrypoint(import.meta.url);
 
 if (_isMain) {
+  installShutdownHandlers({ interactiveSigint: false });
   main()
     .then((code) => process.exit(code ?? 0))
     .catch((err) => {
       console.error("Fatal:", err);
+      closeAllLiveSessionsSync();
       process.exit(2);
     });
 }

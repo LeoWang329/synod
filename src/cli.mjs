@@ -17,6 +17,7 @@ import { createRelayRegistry } from "./relay.mjs";
 import { wireControl } from "./control-wire.mjs";
 import { createReplDispatch, parseOpenArgs } from "./repl-dispatch.mjs";
 import { main as flowMain } from "./flow.mjs";
+import { installShutdownHandlers, closeAllLiveSessionsSync } from "./shutdown.mjs";
 
 // ── CLI parsing ──────────────────────────────────────────────────────
 function parseArgs(argv) {
@@ -218,9 +219,6 @@ async function runTasks(tasks, report, baseOpts, { openBackend, stdout = process
     onIdle: () => {}, // no prompt redraw in non-interactive mode
   });
 
-  // Wire module-level SIGINT to these sessions
-  gSessions = sm._sessions;
-
   try {
     // Open sessions sequentially
     const taskMap = new Map(); // label → task
@@ -274,7 +272,6 @@ async function runTasks(tasks, report, baseOpts, { openBackend, stdout = process
 
   } finally {
     sm.closeAll();
-    gSessions = null;
   }
 }
 
@@ -366,8 +363,6 @@ async function main({
     sm, registry, stderr, dispatch,
   });
   _composedOnTurnComplete = composedOnTurnComplete;
-  // Wire module-level SIGINT handler to these sessions (same as runTasks)
-  gSessions = sm._sessions;
   repl = createRepl({
     prompt: "> ",
     stdin,
@@ -406,7 +401,6 @@ async function main({
         // Flush any trailing buffered text
         sm.flushAll();
         sm.closeAll();
-        gSessions = null;
         resolveExit(exitCode);
       }
     },
@@ -422,8 +416,6 @@ async function main({
 
   return await exitPromise;
 }
-
-let gSessions = null;
 
 // ── Run guard: only execute main + register handlers when this file is the entry point ──
 // realpath both sides so symlinked installs (npm link / npm i -g) still match:
@@ -442,60 +434,13 @@ function isEntrypoint(metaUrl) {
 const _isMain = isEntrypoint(import.meta.url);
 
 if (_isMain) {
-  // ── Module-level SIGINT ──────────────────────────────────────────────
-  let gSigintCount = 0;
-
-  process.on("SIGINT", () => {
-    gSigintCount += 1;
-
-    const sessions = gSessions;
-    if (!sessions || sessions.size === 0) {
-      process.exit(0);
-      return;
-    }
-
-    if (gSigintCount > 1) {
-      process.stderr.write("\nForce exiting...\n");
-      // closeAllSessions moved to session-manager; inline the logic
-      for (const [, info] of sessions) {
-        try { info.session.close(); } catch {}
-      }
-      process.exit(1);
-    }
-
-    process.stderr.write("\nInterrupted. Cleaning up...\n");
-
-    (async () => {
-      const ABORT_TIMEOUT_MS = 3000;
-      const abortPromises = [];
-      for (const [, info] of sessions) {
-        abortPromises.push(
-          Promise.race([
-            (async () => { try { await info.session.abort(); } catch {} })(),
-            new Promise((r) => setTimeout(r, ABORT_TIMEOUT_MS)),
-          ]),
-        );
-      }
-      try {
-        await Promise.all(abortPromises);
-      } catch {}
-      for (const [, info] of sessions) {
-        try { info.session.close(); } catch {}
-      }
-      process.exit(0);
-    })();
-  });
-
-  // ── Error handlers ───────────────────────────────────────────────────
-  process.on("uncaughtException", (err) => {
-    process.stderr.write(`synod: uncaught: ${err.stack || err.message}\n`);
-    process.exit(1);
-  });
+  installShutdownHandlers({ interactiveSigint: true });
 
   main()
     .then((code) => process.exit(code ?? 0))
     .catch((err) => {
       process.stderr.write(`synod: fatal: ${err.stack || err.message}\n`);
+      closeAllLiveSessionsSync();
       process.exit(1);
     });
 }
