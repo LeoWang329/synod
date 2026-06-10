@@ -140,7 +140,7 @@ export function createAgent({
         reused: false,
       }));
 
-      if (reuse) {
+      if (reuse && !runState.disposed) {
         runState.reusedSessions.set(sessionKey, {
           session,
           sessionId,
@@ -223,8 +223,9 @@ export function createAgent({
       logOk = true;
       return text;
     } finally {
-      // Close if non-reuse (always) or reuse + logStep failed (dirty session)
-      if (!reuse || !logOk) {
+      // 关闭条件:一次性会话(总是)、logStep 失败(脏会话)、
+      // 或 run 已 dispose(本调用在 dispose 竞态窗口内完成,不得入池存活)。
+      if (!reuse || !logOk || runState.disposed) {
         if (reuse) {
           removeReusedSession(ctx.runId, sessionKey);
         }

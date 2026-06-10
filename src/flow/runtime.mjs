@@ -169,7 +169,8 @@ export function createRuntime({
    */
   async function disposeRun(ctx) {
     const rs = _runs.get(ctx.runId);
-    if (!rs) return;
+    if (!rs || rs.disposed) return;
+    rs.disposed = true;     // 先立标记:在飞的 agentOnce 持有同一对象引用,看得见
     try {
       for (const [, entry] of rs.reusedSessions) {
         entry.session.close();
@@ -182,7 +183,9 @@ export function createRuntime({
         }).catch(() => {});
       }
     } finally {
-      _runs.delete(ctx.runId);
+      rs.reusedSessions.clear();
+      // 故意不从 _runs 删除:保留 disposed 标记,防止此后的
+      // getRunState 重建一个无人收尾的新 state(P1-7)。
     }
   }
 
