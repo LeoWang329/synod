@@ -28,6 +28,7 @@ export function createAgent({
   logger,
   getRunState,
   removeReusedSession,
+  progress,
 }) {
   /** Best-effort await — never throws. */
   const bg = (p) => p.catch(() => {});
@@ -71,6 +72,8 @@ export function createAgent({
       throw new Error("agent: prompt is required (non-empty string)");
     }
 
+    const sink = progress;
+
     const runState = getRunState(ctx.runId);
     const sessionKey = `${agentName}:${model ?? ""}`;
 
@@ -86,6 +89,10 @@ export function createAgent({
       reused = true;
     } else {
       // openBackend may throw — handle separately (no session to leak)
+      if (sink) {
+        try { sink.emit({ type: "opening", agent: agentName, model }); }
+        catch (e) { /* sink error is best-effort */ }
+      }
       try {
         session = await openBackend({
           agent: agentName,
@@ -125,6 +132,18 @@ export function createAgent({
       }
     }
 
+    // ── Per-call delta subscription (independent of close/logStep) ──
+    let onDelta = null;
+    if (sink) {
+      onDelta = (chunk) => {
+        try {
+          sink.emit({ type: "delta", agent: agentName, model, text: chunk });
+        } catch (e) {
+          runState.lastSinkError = e;
+        }
+      };
+      session.on("delta", onDelta);
+    }
 
     // ── Send + log + close ────────────────────────────────────────
     let result;
@@ -156,6 +175,9 @@ export function createAgent({
       }));
 
       throw sendErr;
+    } finally {
+      // Per-call cleanup — always runs, independent of close-in-finally below
+      if (onDelta) session.off("delta", onDelta);
     }
 
     const text = result.text ?? "";

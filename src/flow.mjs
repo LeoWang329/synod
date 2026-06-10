@@ -10,6 +10,7 @@
  * Options:
  *   --workflows <path>   Workflows directory (default: ./workflows).
  *   --list               List flow names and descriptions (no agent needed).
+ *   --progress           Stream agent deltas to stdout (also SYNOD_PROGRESS=1).
  *
  * Input is parsed as JSON if possible, otherwise kept as a raw string.
  * When no input is given, the flow receives `undefined`.
@@ -41,6 +42,7 @@ import { openBackend } from "./backend.mjs";
 export function parseFlowArgs(argv) {
   const out = {
     list: false,
+    progress: false,
     name: null,
     input: null,
     workflowsRoot: null,
@@ -53,6 +55,9 @@ export function parseFlowArgs(argv) {
     switch (tok) {
       case "--list":
         out.list = true;
+        break;
+      case "--progress":
+        out.progress = true;
         break;
       case "--workflows": {
         const v = argv[++i];
@@ -86,9 +91,6 @@ export function parseFlowArgs(argv) {
 
   return out;
 }
-
-// ── Help ─────────────────────────────────────────────────────────────────
-
 function printHelp(stdout) {
   stdout.write(
     "Usage: node src/flow.mjs <name> [input]\n" +
@@ -97,11 +99,56 @@ function printHelp(stdout) {
     "Options:\n" +
     "  --workflows <path>  Workflows directory (default: ./workflows).\n" +
     "  --list              List flow names and descriptions (pure, no agent).\n" +
+    "  --progress          Stream agent deltas to stdout with [agent:model] prefix.\n" +
+    "                      Also enabled by SYNOD_PROGRESS=1.\n" +
     "  --help, -h          Print this help.\n" +
     "\n" +
     "Input is JSON-parsed if valid; otherwise treated as a raw string.\n" +
     "When no input is given, the flow receives undefined.\n",
   );
+}
+
+// ── Progress sink ─────────────────────────────────────────────────────────
+
+/**
+ * Create the default stdout progress sink.
+ *
+ * Writes to stdout with `[agent:model]` prefix.  No line buffering
+ * (qa-loop is serial; YAGNI).  Silent for "started" / "end" types.
+ *
+ * @param {NodeJS.WritableStream} stdout
+ * @returns {{ emit: (event: object) => void }}
+ */
+function createDefaultProgressSink(stdout) {
+  let atLineStart = true;
+  return {
+    emit(event) {
+      const label = event.model ? `${event.agent}:${event.model}` : event.agent;
+      if (event.type === "opening") {
+        stdout.write(`[${label}] opening...\n`);
+        atLineStart = true;
+      } else if (event.type === "delta" && event.text) {
+        const t = event.text;
+        let out = "";
+        let i = 0;
+        while (i < t.length) {
+          if (atLineStart) {
+            out += `[${label}] `;
+            atLineStart = false;
+          }
+          const nl = t.indexOf("\n", i);
+          if (nl === -1) {
+            out += t.slice(i);
+            break;
+          }
+          out += t.slice(i, nl + 1);
+          atLineStart = true;
+          i = nl + 1;
+        }
+        if (out) stdout.write(out);
+      }
+    },
+  };
 }
 
 // ── Input parsing ────────────────────────────────────────────────────────
@@ -187,6 +234,10 @@ export async function main({
 
   const input = parseInput(args.input);
 
+  // ── Progress sink ───────────────────────────────────────────────────
+  const progressEnabled = args.progress || process.env.SYNOD_PROGRESS === "1";
+  const progressSink = progressEnabled ? createDefaultProgressSink(stdout) : undefined;
+
   // Ensure artifacts directory exists for logger
   await mkdir("artifacts", { recursive: true }).catch(() => {});
 
@@ -198,6 +249,7 @@ export async function main({
       workflowsRoot: root,
       clock: () => Date.now(),
       fs: realFs,
+      progress: progressSink,
     });
   } catch (err) {
     stderr.write(`Error: failed to create runtime: ${err.message}\n`);

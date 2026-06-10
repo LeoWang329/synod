@@ -108,7 +108,7 @@ function defaultIo() {
  * ctx.runId — never stored on the pure-data ctx itself.
  */
 export function createRuntime({
-  fs, clock, openBackend, io,
+  fs, clock, openBackend, io, progress,
   workflowsRoot, maxDepth, maxActiveSubRuns,
 } = {}) {
   const resolvedIo = io ?? defaultIo();
@@ -121,7 +121,7 @@ export function createRuntime({
   function getRunState(runId) {
     let rs = _runs.get(runId);
     if (!rs) {
-      rs = { reusedSessions: new Map() };
+      rs = { reusedSessions: new Map(), lastSinkError: null };
       _runs.set(runId, rs);
     }
     return rs;
@@ -137,6 +137,7 @@ export function createRuntime({
     logger,
     getRunState,
     removeReusedSession,
+    progress,
   });
 
   const bash = createBash({ logger });
@@ -210,6 +211,8 @@ export function createRuntime({
     reviseWithHuman,
     /** disposeRun(ctx) — close reused sessions for a run. */
     disposeRun,
+    /** Escape hatch for tests: return the per-run state map entry. */
+    _getRunState: getRunState,
     /** Logger instance bound to the injected sinks. */
     logger,
     /** Filesystem sink (injected or undefined). */
