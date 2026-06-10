@@ -121,7 +121,12 @@ export function createRuntime({
   function getRunState(runId) {
     let rs = _runs.get(runId);
     if (!rs) {
-      rs = { reusedSessions: new Map(), lastSinkError: null };
+      rs = {
+        reusedSessions: new Map(),
+        keyChains: new Map(),   // sessionKey → 串行链(reuse 调用排队,P1-6b)
+        disposed: false,        // disposeRun 后立此标记,防复活(P1-7)
+        lastSinkError: null,
+      };
       _runs.set(runId, rs);
     }
     return rs;

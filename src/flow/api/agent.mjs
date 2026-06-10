@@ -49,11 +49,24 @@ export function createAgent({
    * @param {boolean} [opts.reuse] – keep session alive for later calls
    * @returns {Promise<string>} accumulated response text
    */
-  async function agent(
-    ctx,
-    { agent: agentName, model, prompt, reuse },
-  ) {
-    // ── Pre-validation (before any session is opened) ─────────────
+  async function agent(ctx, opts) {
+    validateAgentArgs(ctx, opts);
+    if (!opts.reuse) return agentOnce(ctx, opts);
+    // reuse = 同 key 串行:复用会话绝不并发 send(P1-6b)。
+    // 链头 catch 吞掉前序错误——排队语义只关心"轮到我",不继承前者失败。
+    const runState = getRunState(ctx.runId);
+    const key = sessionKeyOf(opts);
+    const prev = runState.keyChains.get(key) ?? Promise.resolve();
+    const task = prev.catch(() => {}).then(() => agentOnce(ctx, opts));
+    runState.keyChains.set(key, task);
+    return task;
+  }
+
+  function sessionKeyOf({ agent: agentName, model }) {
+    return `${agentName}:${model ?? ""}`;
+  }
+
+  function validateAgentArgs(ctx, { agent: agentName, model, prompt }) {
     if (!ctx || typeof ctx.runId !== "string" || !ctx.runId) {
       throw new Error("agent: ctx.runId is required (non-empty string)");
     }
@@ -71,7 +84,12 @@ export function createAgent({
     if (typeof prompt !== "string" || !prompt) {
       throw new Error("agent: prompt is required (non-empty string)");
     }
+  }
 
+  async function agentOnce(
+    ctx,
+    { agent: agentName, model, prompt, reuse },
+  ) {
     const sink = progress;
 
     const runState = getRunState(ctx.runId);
