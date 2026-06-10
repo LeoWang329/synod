@@ -16,6 +16,7 @@ import { createSessionManager, createLineBuffer, checkAgentAvailable, AGENTS } f
 import { createRelayRegistry } from "./relay.mjs";
 import { wireControl } from "./control-wire.mjs";
 import { createReplDispatch, parseOpenArgs } from "./repl-dispatch.mjs";
+import { main as flowMain } from "./flow.mjs";
 
 // ── CLI parsing ──────────────────────────────────────────────────────
 function parseArgs(argv) {
@@ -154,6 +155,7 @@ function printHelp(stdout = process.stdout) {
       "  /relay <from>-><to>   Forward source turn text to target",
       "  /unrelay <from>-><to> Remove a relay rule",
       "  /relays               List active relay rules",
+      "  /flow [<name> [input]] Run a workflow (omit name to list available)",
       "  /exit, /quit          Close all sessions and quit",
       "  Ctrl-D (EOF)          Same as /exit",
       "",
@@ -338,11 +340,26 @@ async function main({
   });
   _smForRelay = sm;
 
+  // ── Flow engine bridge (human-only /flow command) ──────────────────────
+  // Resolve flows from the synod package's workflows/ dir (not the launch cwd),
+  // so /flow works regardless of where synod was started; agents still run in
+  // `cwd`.  Track in-flight runs so onClose can await them — a flow dropped on
+  // /exit would orphan its agent sessions (violates the no-residue invariant).
+  const flowsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "workflows");
+  const _pendingFlows = new Set();
+  const runFlow = (flowArgv) => {
+    const p = flowMain({ argv: flowArgv, stdout, stderr, openBackend, workflowsRoot: flowsRoot, cwd });
+    _pendingFlows.add(p);
+    p.finally(() => _pendingFlows.delete(p)).catch(() => {});
+    return p;
+  };
+
   // ── REPL dispatch (created before wireControl so it can be passed in) ──
   const dispatch = createReplDispatch({
     sm, registry, stdout, stderr,
     defaultAgent: args.agent,
     guardrails: { maxSessions: 10, maxDepth: 3, allowWrite: false },
+    runFlow,
   });
 
   const { onTurnComplete: composedOnTurnComplete } = wireControl({
@@ -372,6 +389,11 @@ async function main({
     onClose: async () => {
       let exitCode = 0;
       try {
+        // Let any in-flight /flow runs finish first so they tear down their own
+        // agent sessions (otherwise /exit would orphan them).
+        if (_pendingFlows.size > 0) {
+          await Promise.allSettled([..._pendingFlows]);
+        }
         await sm.drainAll();
       } catch (err) {
         exitCode = 1;

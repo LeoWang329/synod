@@ -70,6 +70,7 @@ node src/cli.mjs --help          # 查看全部参数
 | `/relay <from>-><to>` | 加一条转发规则(见 §6) |
 | `/unrelay <from>-><to>` | 删一条转发规则 |
 | `/relays` | 列出当前转发规则 |
+| `/flow [<name> [input]]` | 在 REPL 内跑一个工作流(省略名字=列出可用 flow);flow 自带开/关会话、结果以 JSON 打印,退出时会等在跑的 flow 收尾。**默认实时流式**显示各 agent 的输出(每行带 `[agent:model]` 前缀) |
 | `/exit`, `/quit`, `Ctrl-D` | 关闭全部会话并退出 |
 | `Ctrl-C` | 中断当前轮,清理后退出(不残留子进程) |
 
@@ -135,8 +136,12 @@ node src/flow.mjs --list                 # 列出可用 flow(名字 + 描述,纯
 node src/flow.mjs hello                   # 跑名为 hello 的 flow
 node src/flow.mjs hello '{"topic":"排序"}' # 带输入(能 JSON.parse 就解析成对象,否则当裸串)
 node src/flow.mjs --workflows ./my-flows myflow   # 指定 flow 目录(默认 ./workflows)
+node src/flow.mjs --progress qa-loop '{"topic":"排序"}'  # 实时流式显示各 agent 的 delta
 node src/flow.mjs --help
 ```
+
+> **进度可见性**:`node src/flow.mjs` 默认**静默**(只在结束打印 JSON 结果);加 `--progress` 或设 `SYNOD_PROGRESS=1` 后,会把每个 `agent()` 节点的逐字 delta 实时写到 stdout(每行带 `[agent:model]` 前缀,冷启动时先打一行 `[…] opening...`)。REPL 里的 `/flow` **默认开**进度。
+> **会话复用**:同一 flow 内对**同一 `agent:model`** 的多次 `agent()` 调用,加 `reuse: true` 可复用同一条后端会话(省冷启动)——注意这会**共享会话上下文(同一 thread 历史)**,不是纯进程池。`qa-loop` 即用此法把冷启动从 3–7 次降到 2 次。
 
 `workflows/` 下自带几个示例 flow:
 
@@ -146,6 +151,7 @@ node src/flow.mjs --help
 | `backtrack-demo` | omp 产出 → codex 审核 → 不过就带反馈重试(回退) |
 | `revise-demo` | 产出 → 人给自然语言反馈 → 改 → 定稿(人在环修订) |
 | `parent` / `child-echo` | 父 flow 调子 flow,演示嵌套 |
+| `qa-loop` | deepseek 出题 → minimax 回答 → deepseek 评审,不过带反馈重答(≤3 轮);用 `reuse` 复用会话 |
 
 ### 怎么写一个 flow(速览)
 

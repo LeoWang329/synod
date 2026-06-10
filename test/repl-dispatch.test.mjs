@@ -74,8 +74,10 @@ function setup({ smOpts = {}, regOpts = {} } = {}) {
   const stdout = captureStream();
   const stderr = captureStream();
   const defaultAgent = "omp";
-  const dispatch = createReplDispatch({ sm, registry, stdout, stderr, defaultAgent });
-  return { dispatch, sm, registry, stdout, stderr, defaultAgent };
+  const flowCalls = [];
+  const runFlow = async (argv) => { flowCalls.push(argv); return 0; };
+  const dispatch = createReplDispatch({ sm, registry, stdout, stderr, defaultAgent, runFlow });
+  return { dispatch, sm, registry, stdout, stderr, defaultAgent, flowCalls };
 }
 
 // ── parseOpenArgs ───────────────────────────────────────────────────────
@@ -434,6 +436,50 @@ describe("dispatch / commands", () => {
     const r = await dispatch("/sessions  ");
     assert.strictEqual(r.redraw, true);
     assert.strictEqual(sm.calls.list, 1);
+  });
+});
+
+// ── /flow command (human-only flow-engine bridge) ──────────────────────
+
+describe("dispatch /flow command", () => {
+  it("/flow <name> <input> calls runFlow with [name, input], announces, redraws", async () => {
+    const { dispatch, flowCalls, stdout } = setup();
+    const r = await dispatch("/flow qa-loop hello world");
+    assert.strictEqual(r.redraw, true);
+    assert.deepStrictEqual(flowCalls, [["--progress", "qa-loop", "hello world"]]);
+    assert.ok(stdout.buf.includes('Running flow "qa-loop"'));
+  });
+
+  it("/flow <name> (no input) calls runFlow with [name]", async () => {
+    const { dispatch, flowCalls } = setup();
+    const r = await dispatch("/flow hello");
+    assert.strictEqual(r.redraw, true);
+    assert.deepStrictEqual(flowCalls, [["--progress", "hello"]]);
+  });
+
+  it("/flow with no name lists flows via runFlow(['--list']) and does not announce a run", async () => {
+    const { dispatch, flowCalls, stdout } = setup();
+    const r = await dispatch("/flow");
+    assert.strictEqual(r.redraw, true);
+    assert.deepStrictEqual(flowCalls, [["--list"]]);
+    assert.ok(!stdout.buf.includes("Running flow"));
+  });
+
+  it("/flow preserves input spacing verbatim (JSON input survives)", async () => {
+    const { dispatch, flowCalls } = setup();
+    await dispatch('/flow qa-loop {"topic":"a b"}');
+    assert.deepStrictEqual(flowCalls, [["--progress", "qa-loop", '{"topic":"a b"}']]);
+  });
+
+  it("/flow without a runFlow dep reports unavailable and does not throw", async () => {
+    const stdout = captureStream();
+    const stderr = captureStream();
+    const dispatch = createReplDispatch({
+      sm: fakeSm(), registry: fakeRegistry(), stdout, stderr, defaultAgent: "omp",
+    });
+    const r = await dispatch("/flow hello");
+    assert.strictEqual(r.redraw, true);
+    assert.ok(stderr.buf.includes("flow runner not available"));
   });
 });
 

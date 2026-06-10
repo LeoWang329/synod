@@ -12,8 +12,9 @@
 //
 // ## source: "human" (unchanged from A0)
 //
-// All paths return synchronously except /open.  This keeps /exit synchronous
-// so readline's exitRequested guard works within the same tick.
+// All paths return synchronously except /open and /flow (both return a
+// Promise).  This keeps /exit synchronous so readline's exitRequested guard
+// works within the same tick.
 //
 // ## source: "agent-fence" (A2)
 //
@@ -130,9 +131,12 @@ function guardOpen({ agent, model, write }, depth, sm, g) {
  * @param {string[]} [deps.guardrails.allowedAgents=null]
  * @param {string[]} [deps.guardrails.allowedModels=null]
  * @param {boolean} [deps.guardrails.allowWrite=false]
+ * @param {(argv: string[]) => Promise<number>} [deps.runFlow] — flow-engine
+ *   entry (flow.mjs main bound to this REPL's streams/backend/cwd).  Human-only;
+ *   used by the /flow command.  If omitted, /flow reports it is unavailable.
  * @returns {function}
  */
-export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent, guardrails }) {
+export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent, guardrails, runFlow }) {
   const g = {
     maxSessions: Infinity,
     maxDepth: Infinity,
@@ -141,6 +145,11 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
     allowWrite: false,
     ...guardrails,
   };
+
+  const _runFlow = runFlow || (async () => {
+    stderr.write("flow runner not available\n");
+    return 1;
+  });
 
   /**
    * Dispatch a single trimmed non-empty REPL line.
@@ -282,6 +291,24 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
         mesh: opts.mesh, // undefined → sm falls back to session default
         announce: "interactive",
       }).then(() => ({ redraw: true }));
+    }
+
+    if (cmd === "/flow") {
+      // Everything after "/flow ": "<name> [input verbatim]".  Re-parse from
+      // the raw line (not the whitespace-split `rest`) so JSON/string input
+      // keeps its internal spacing.
+      const afterCmd = line.slice(cmd.length).trim();
+      if (!afterCmd) {
+        // No name → list available flows (flow.mjs --list, pure, no agent).
+        return _runFlow(["--list"]).then(() => ({ redraw: true }), () => ({ redraw: true }));
+      }
+      const m = afterCmd.match(/^(\S+)\s*([\s\S]*)$/);
+      const name = m[1];
+      const input = m[2];
+      const argv = input ? ["--progress", name, input] : ["--progress", name];
+      stdout.write(`Running flow "${name}"...\n`);
+      // flow.mjs main() prints the JSON result / errors to our streams itself.
+      return _runFlow(argv).then(() => ({ redraw: true }), () => ({ redraw: true }));
     }
 
     // Unknown / command

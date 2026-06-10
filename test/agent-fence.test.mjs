@@ -210,6 +210,14 @@ describe("agent-fence rejects disallowed commands", () => {
     assertNoSideEffects(sm, registry, stdout, stderr);
   });
 
+  it("/flow → rejected, zero side-effect (flows are human-only, not in agent whitelist)", async () => {
+    const { dispatch, sm, registry, stdout, stderr } = setup();
+    const r = await dispatch("/flow qa-loop", { source: "agent-fence" });
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.reason.length > 0);
+    assertNoSideEffects(sm, registry, stdout, stderr);
+  });
+
   it("plain text 'hello' → rejected, reason mentions 'not a command'", async () => {
     const { dispatch, sm, registry, stdout, stderr } = setup();
     const r = await dispatch("hello", { source: "agent-fence" });
