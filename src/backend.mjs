@@ -665,6 +665,10 @@ class OmpSession extends EventEmitter {
       throw new Error(`OMP session ${this.id} is closed.`);
     if (!this.proc || this.proc.exitCode !== null)
       throw new Error(`OMP process for ${this.id} is not running.`);
+    // 并发 turn 守卫(与 CodexSession 对齐):synod 的排队是宿主侧
+    // sendQueue 的职责,会话层并发 send 只会互相污染 turnText 累积。
+    if (this.status === "running" || this.isStreaming)
+      throw new Error(`OMP session ${this.id} already has a running turn.`);
     // Reset before prompting so waitIdle below ignores the pre-streaming idle window
     // (a stale idle reading from before this turn actually starts).
     this.turnStarted = false;
