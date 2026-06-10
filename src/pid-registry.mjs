@@ -18,7 +18,11 @@ import { spawnSync } from "node:child_process";
 
 const STATE_ROOT =
   process.env.AGENT_BRIDGE_STATE_DIR || path.join(os.homedir(), ".agent-bridge");
-const PID_DIR = path.join(STATE_ROOT, "pids");
+// synod 自己的 PID 注册子目录。**不可**复用 agent-bridge 的 `pids/`:
+// agent-bridge 这个独立工具用 ~/.agent-bridge/pids/<id>.json 跟踪它自己的
+// 会话(schema 不同:pid 嵌在 processes[] 里)。共用会让 synod 的收尸误删
+// agent-bridge 的记录(其 rec.pid 为 undefined → 被当死记录清掉)。故命名空间隔离。
+const PID_DIR = path.join(STATE_ROOT, "synod-pids");
 
 function isAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -95,6 +99,17 @@ export function reapOrphans({ stderr = process.stderr } = {}) {
       rec = JSON.parse(fs.readFileSync(file, "utf8"));
     } catch {
       try { fs.unlinkSync(file); } catch {}
+      continue;
+    }
+    // 仅处理 synod 自己 schema 的记录(sessionId + 整数 pid + ownerPid)。
+    // 任何异构记录(如 agent-bridge 的 {processes:[...]})一律跳过、绝不删,
+    // 防止跨工具误删/误判。
+    if (
+      typeof rec.sessionId !== "string" ||
+      !Number.isInteger(rec.pid) ||
+      !Number.isInteger(rec.ownerPid)
+    ) {
+      skipped.push({ rec, reason: "foreign-record" });
       continue;
     }
     if (rec.ownerPid === process.pid) { skipped.push({ rec, reason: "own" }); continue; }

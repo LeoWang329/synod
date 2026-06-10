@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
 process.env.AGENT_BRIDGE_STATE_DIR = mkdtempSync(join(tmpdir(), "synod-pids-"));
-const PID_DIR = join(process.env.AGENT_BRIDGE_STATE_DIR, "pids");
+const PID_DIR = join(process.env.AGENT_BRIDGE_STATE_DIR, "synod-pids");
 const { writePidRecord, removePidRecord, reapOrphans } =
   await import("../src/pid-registry.mjs");
 
@@ -121,4 +121,24 @@ test("reapOrphans:etime 与记录年龄不符 → 跳过(防 PID 复用)",
   assert.equal(isAliveTest(child.pid), true, "进程不得被误杀");
   try { process.kill(child.pid, "SIGKILL"); } catch {}
   removePidRecord("stale-age");
+});
+
+test("reapOrphans:异构记录(agent-bridge schema)绝不删除/触碰", { skip: !POSIX }, async () => {
+  const { writeFileSync, existsSync, mkdirSync } = await import("node:fs");
+  mkdirSync(PID_DIR, { recursive: true });
+  const foreign = join(PID_DIR, "codex-foreign-xyz.json");
+  // agent-bridge schema:pid 嵌在 processes[],无顶层 sessionId/pid;owner 设为已死 pid
+  const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+  writeFileSync(foreign, JSON.stringify({
+    id: "codex-foreign-xyz", agent: "codex", ownerPid: dead,
+    cwd: "/tmp", createdAt: new Date(0).toISOString(),
+    processes: [{ role: "codex-app-server", pid: 999999, command: ["codex"] }],
+    updatedAt: new Date(0).toISOString(),
+  }));
+  const r = reapOrphans({ stderr: { write() {} } });
+  assert.equal(existsSync(foreign), true, "异构记录绝不能被删除");
+  assert.ok(r.skipped.some((s) => s.reason === "foreign-record"), "应记为 foreign-record 跳过");
+  assert.equal(r.reaped.length, 0);
+  removePidRecord("codex-foreign-xyz"); // cleanup (removePidRecord uses synod's path; also unlink directly)
+  try { (await import("node:fs")).unlinkSync(foreign); } catch {}
 });

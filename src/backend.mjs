@@ -342,11 +342,9 @@ function terminateProcessTree(pid, signal = "SIGTERM", { group = false } = {}) {
   // POSIX:detached 子进程是组长,组杀一次收掉整棵树(含我们枚举
   // 不到的、以及枚举与击杀之间新 spawn 的孙进程)。仅在调用方确知
   // 目标是组长时使用(group:true);否则走旧的逐 PID 递归。
-  // fake 会话注入路径也会把 _detached 置 true,但其随机 pid(90000+)
-  // 不是真实组长:kill(-pid) 抛 ESRCH/EPERM 被 catch,随即回退下面的
-  // 旧递归路径——与改动前 process.kill(pid) 的风险面一致,无新增。
-  // 仅当目标 pid 仍存活才尝试组杀:对已死(含 fake 随机)pid 组杀无意义,
+  // 仅当目标 pid 仍存活才尝试组杀:对已死(含理论上的复用)pid 组杀无意义,
   // 且能消除"随机 pid 恰为某真实进程组 PGID"的理论误伤窗口。
+  // (注入的 fake 会话现已 _detached=false 且无真实 pid,根本不会走到组杀。)
   if (group) {
     let alive = false;
     try { process.kill(pid, 0); alive = true; } catch {}
