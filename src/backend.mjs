@@ -49,6 +49,14 @@ const LOG_DIR = path.join(STATE_ROOT, "logs");
 
 const IS_WINDOWS = process.platform === "win32";
 
+// First omp RPC spawn is the coldest (auth-broker init + model spin-up + large
+// Node CLI load), especially on Windows; the old 20s could be shorter than a
+// legitimate cold start and made the very first session fail to open (exit 3,
+// no streaming — see acceptance A1). Generous default, env-overridable since
+// cold-start time varies by machine.
+const OMP_READY_TIMEOUT_MS =
+  Number(process.env.SYNOD_OMP_READY_TIMEOUT_MS) || 60_000;
+
 const AGENTS = {
   omp: {
     label: "Oh My Pi",
@@ -520,7 +528,7 @@ class OmpSession extends EventEmitter {
       this.pending.clear();
     });
 
-    await withTimeout(this.readyPromise, 20000, "Timed out waiting for OMP RPC ready.");
+    await withTimeout(this.readyPromise, OMP_READY_TIMEOUT_MS, "Timed out waiting for OMP RPC ready.");
     return this;
   }
 
