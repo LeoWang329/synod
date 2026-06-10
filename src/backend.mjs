@@ -38,6 +38,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { trackSession, untrackSession } from "./shutdown.mjs";
+import { writePidRecord, removePidRecord } from "./pid-registry.mjs";
 
 // ── Constants ────────────────────────────────────────────────────────
 // 0.5.1:13–36
@@ -819,6 +820,7 @@ class OmpSession extends EventEmitter {
 
   close() {
     untrackSession(this);
+    removePidRecord(this.id);
     this.#setStatus("closed", false, { source: "close" });
     // Reject any in-flight RPCs (send/state/result waiters) now: once status is "closed"
     // the proc "close" handler early-returns and won't reject them, so they'd hang forever.
@@ -1484,6 +1486,7 @@ class CodexSession extends EventEmitter {
 
   close() {
     untrackSession(this);
+    removePidRecord(this.id);
     this.#setStatus("closed", false, { source: "close" });
     try {
       this.proc?.stdin?.end();
@@ -1536,6 +1539,7 @@ export async function openBackend({
     throw err;
   }
   trackSession(session);
+  writePidRecord({ sessionId: session.id, pid: session.proc?.pid, bin: agent });
   return session;
 }
 
