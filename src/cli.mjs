@@ -28,6 +28,7 @@ function parseArgs(argv) {
     write: false,
     mesh: undefined, // tri-state: undefined → fall back to SYNOD_MESH env (see main())
     tasks: [],
+    reap: false,
     _unknown: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -66,6 +67,9 @@ function parseArgs(argv) {
       }
       case "--write":
         out.write = true;
+        break;
+      case "--reap":
+        out.reap = true;
         break;
       case "--mesh":
         // Mirror parseOpenArgs: reject a conflicting flag, allow idempotent repeat.
@@ -142,6 +146,7 @@ function printHelp(stdout = process.stdout) {
       "  --model <M>           Model id (e.g. minimax-code-cn/MiniMax-M3)",
       "  --effort <E>          Reasoning effort (omp, e.g. high/xhigh)",
       "  --write               Allow file writes (default: read-only)",
+      "  --reap                Kill orphaned agent processes from crashed runs, then exit",
       "  --task <agent>:<msg>  Run task non-interactively (repeatable)",
       "  --mesh                Inject orchestration skill into spawned agents (default: off)",
       "  --no-mesh             Force mesh off, overriding the SYNOD_MESH env var",
@@ -295,6 +300,16 @@ async function main({
     return 2;
   }
 
+  if (args.reap) {
+    const { reapOrphans } = await import("./pid-registry.mjs");
+    const r = reapOrphans({ stderr });
+    stdout.write(
+      `reap: scanned ${r.scanned}, reaped ${r.reaped.length}, skipped ${r.skipped.length}` +
+      `${r.unsupported ? " (win32: unsupported)" : ""}\n`,
+    );
+    return 0;
+  }
+
   const report = doctor();
   const cwd = path.resolve(process.cwd());
   // Precedence: explicit --mesh/--no-mesh (true/false) > SYNOD_MESH env > off.
@@ -435,6 +450,10 @@ const _isMain = isEntrypoint(import.meta.url);
 
 if (_isMain) {
   installShutdownHandlers({ interactiveSigint: true });
+  // 启动顺扫:收割上次崩溃残留的孤儿(尽力而为,绝不阻断启动)
+  import("./pid-registry.mjs")
+    .then(({ reapOrphans }) => { try { reapOrphans({ stderr: process.stderr }); } catch {} })
+    .catch(() => {});
 
   main()
     .then((code) => process.exit(code ?? 0))
