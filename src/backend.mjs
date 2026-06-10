@@ -319,7 +319,7 @@ function listChildPids(pid) {
 }
 
 // 0.5.1:400 — with win32 branch
-function terminateProcessTree(pid, signal = "SIGTERM") {
+function terminateProcessTree(pid, signal = "SIGTERM", { group = false } = {}) {
   if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return false;
 
   if (process.platform === "win32") {
@@ -338,6 +338,15 @@ function terminateProcessTree(pid, signal = "SIGTERM") {
     return result.status === 0 || result.status === 128;
   }
 
+  // POSIX:detached 子进程是组长,组杀一次收掉整棵树(含我们枚举
+  // 不到的、以及枚举与击杀之间新 spawn 的孙进程)。仅在调用方确知
+  // 目标是组长时使用(group:true);否则走旧的逐 PID 递归。
+  // fake 会话注入路径也会把 _detached 置 true,但其随机 pid(90000+)
+  // 不是真实组长:kill(-pid) 抛 ESRCH/EPERM 被 catch,随即回退下面的
+  // 旧递归路径——与改动前 process.kill(pid) 的风险面一致,无新增。
+  if (group) {
+    try { process.kill(-pid, signal); return true; } catch {}
+  }
   for (const childPid of listChildPids(pid))
     terminateProcessTree(childPid, signal);
   try {
@@ -467,7 +476,9 @@ class OmpSession extends EventEmitter {
       env: process.env,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
+      detached: !IS_WINDOWS,
     });
+    this._detached = !IS_WINDOWS;
     appendLog(
       this.logFile,
       `[agent-bridge] spawned OMP pid=${this.proc.pid}\n`,
@@ -824,7 +835,7 @@ class OmpSession extends EventEmitter {
     // failure) where the process keeps running — symmetric with CodexSession.close.
     // (In the CLI's immediate-exit paths the unref'd 3s timer simply never fires,
     // which is fine: win32 already killed synchronously, POSIX relies on SIGTERM.)
-    terminateProcessTree(this.proc?.pid);
+    terminateProcessTree(this.proc?.pid, "SIGTERM", { group: this._detached === true });
     scheduleForceKill(this.proc);
     return { closed: true, session_id: this.id };
   }
@@ -876,7 +887,9 @@ class CodexSession extends EventEmitter {
       env: process.env,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
+      detached: !IS_WINDOWS,
     });
+    this._detached = !IS_WINDOWS;
     appendLog(
       this.logFile,
       `[agent-bridge] spawned codex app-server pid=${this.proc.pid}\n`,
@@ -1479,7 +1492,7 @@ class CodexSession extends EventEmitter {
     // so nothing is left pending; the proc "close" handler early-returns once closed.
     this.#rejectAll(new Error("session closed"));
     const pid = this.proc?.pid;
-    terminateProcessTree(pid);
+    terminateProcessTree(pid, "SIGTERM", { group: this._detached === true });
     scheduleForceKill(this.proc);
     return { closed: true, session_id: this.id };
   }
@@ -1525,6 +1538,8 @@ export async function openBackend({
   trackSession(session);
   return session;
 }
+
+export { terminateProcessTree };
 
 /**
  * Check availability of omp and codex on this machine.
