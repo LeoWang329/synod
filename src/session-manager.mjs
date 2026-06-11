@@ -5,6 +5,7 @@
 // Injected via createSessionManager({ openBackend, stdout, stderr, report, cwd, defaults, onIdle, errorLeadingNewline }).
 
 import { enabled, color, labelColor } from "./ui/ansi.mjs";
+import { turnBoundary } from "./ui/decorations.mjs";
 
 // ── Line buffer ───────────────────────────────────────────────────────
 function createLineBuffer(label, stdout = process.stdout, { colorize } = {}) {
@@ -160,9 +161,17 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
       session.on("error", (err) => {
         stderr.write(`${_nl}[${label} error] ${err.message}\n`);
       });
+      let _turnStartAt = null;
       session.on("status", ({ status }) => {
-        if (status === "idle") {
+        if (status === "running") {
+          _turnStartAt = Date.now();
+        } else if (status === "idle") {
           lineBuf.flush();
+          if (useColor && _turnStartAt != null) {
+            const secs = ((Date.now() - _turnStartAt) / 1000).toFixed(1);
+            stdout.write(turnBoundary(label, secs));
+            _turnStartAt = null;
+          }
           _onIdle(label);
         }
       });

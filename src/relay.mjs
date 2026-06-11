@@ -111,7 +111,7 @@ export function createRelayRegistry(enqueue) {
       if (!targets || targets.size === 0) return;
       const msg = `[relay from ${fromLabel}]\n\n${turnText}`;
       for (const to of targets) {
-        enqueue(to, msg);
+        enqueue(to, msg, { from: fromLabel, chars: turnText.length });
       }
     },
   };

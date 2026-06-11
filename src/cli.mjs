@@ -21,6 +21,8 @@ import { loadConfig, registerConfigBackends } from "./config.mjs";
 import { main as flowMain } from "./flow.mjs";
 import { prepareResume } from "./flow/replay.mjs";
 import { createInputRouter } from "./input-router.mjs";
+import { enabled } from "./ui/ansi.mjs";
+import { relayBanner } from "./ui/decorations.mjs";
 import { installShutdownHandlers, closeAllLiveSessionsSync, gracefulShutdown } from "./shutdown.mjs";
 import { scanResidualWorktrees } from "./run-workspace.mjs";
 
@@ -403,9 +405,12 @@ async function main({
   const writePrompt = () => { if (!_exiting && !_closed) stdout.write("> "); };
 
   // ── Relay registry (two-phase: created before sm, enqueue wired after) ──
+  const colorOn = enabled(stdout, env);
   let _smForRelay = null;
-  const registry = createRelayRegistry((to, msg) => {
-    if (_smForRelay) _smForRelay.enqueue({ target: to, msg });
+  const registry = createRelayRegistry((to, msg, meta) => {
+    if (!_smForRelay) return;
+    if (colorOn && meta) stdout.write(relayBanner(to, meta.from, meta.chars));
+    _smForRelay.enqueue({ target: to, msg });
   });
 
   // ── Control channel (two-phase: composed onTurnComplete set after sm exists) ──
