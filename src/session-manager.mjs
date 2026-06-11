@@ -4,8 +4,11 @@
 // send queues, and event wiring (delta → feed, error → stderr, status → flush).
 // Injected via createSessionManager({ openBackend, stdout, stderr, report, cwd, defaults, onIdle, errorLeadingNewline }).
 
+import { enabled, color, labelColor } from "./ui/ansi.mjs";
+
 // ── Line buffer ───────────────────────────────────────────────────────
-function createLineBuffer(label, stdout = process.stdout) {
+function createLineBuffer(label, stdout = process.stdout, { colorize } = {}) {
+  const prefix = colorize ? colorize(`[${label}]`) : `[${label}]`;
   let buf = "";
   return {
     feed(chunk) {
@@ -13,12 +16,12 @@ function createLineBuffer(label, stdout = process.stdout) {
       const lines = buf.split("\n");
       buf = /** @type {string} */ (lines.pop());
       for (const line of lines) {
-        stdout.write(`[${label}] ${line}\n`);
+        stdout.write(`${prefix} ${line}\n`);
       }
     },
     flush() {
       if (buf.length > 0) {
-        stdout.write(`[${label}] ${buf}\n`);
+        stdout.write(`${prefix} ${buf}\n`);
         buf = "";
       }
     },
@@ -150,7 +153,9 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
       });
       if (!session) return null;
 
-      const lineBuf = createLineBuffer(label, stdout);
+      const useColor = enabled(stdout);
+      const colorize = useColor ? (s) => color(labelColor(label), s) : null;
+      const lineBuf = createLineBuffer(label, stdout, { colorize });
       session.on("delta", (chunk) => lineBuf.feed(chunk));
       session.on("error", (err) => {
         stderr.write(`${_nl}[${label} error] ${err.message}\n`);
