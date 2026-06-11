@@ -85,6 +85,19 @@ test("finalize:合并成功后从 _acquired 清理(list 不含已删 worktree)",
   assert.equal(ws.list("run6").length, 0, "已合并 worktree 不再出现在 list()/checkpoint");
 });
 
+test("finalize:run 期间主仓被切到别的分支 → 不合到错误分支,保留 worktree 报告", () => {
+  const cwd = makeGitRepo();
+  const ws = createRunWorkspace({ cwd, worktreesRoot: worktreesRoot(), runsRoot: worktreesRoot() });
+  const a = ws.acquire({ runId: "run-sw", name: "feat" });   // 捕获 start = main
+  writeFileSync(join(a.path, "n.txt"), "x\n");
+  git(cwd, ["checkout", "-q", "-b", "other"]);                // 模拟 run 期间主仓切分支
+  const r = ws.finalize({ runId: "run-sw" });
+  assert.equal(r.merged.length, 0, "不在错误分支上 merge");
+  assert.equal(r.conflicts.length, 1);
+  assert.match(r.conflicts[0].error || "", /expected start branch|main repo is on/i);
+  assert.ok(existsSync(a.path), "worktree 保留留人手动合");
+});
+
 test("finalize:脏 worktree commit 失败(pre-commit 拒绝)→ 保留 worktree 不丢工作", () => {
   const cwd = makeGitRepo();
   // 装一个必失败的 pre-commit hook(worktree 共享主仓 .git/hooks)

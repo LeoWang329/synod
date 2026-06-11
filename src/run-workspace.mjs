@@ -100,6 +100,20 @@ export function createRunWorkspace({ cwd, worktreesRoot, runsRoot }) {
     const start = startBranch ?? _startBranch ?? currentBranch();
     const merged = [];
     const conflicts = [];
+    // 主仓必须仍停在起始分支才能"合回起始分支"。若 run 期间主仓被切到别的分支,
+    // 此处 merge 会合到错误分支(违反不变量)——不冒险(也不擅自 checkout),
+    // 保留全部 worktree 进 conflicts 留人手动合。
+    const cur = currentBranch();
+    if (cur !== start) {
+      for (const [key, ws] of _acquired) {
+        if (!key.startsWith(`${runId}/`)) continue;
+        conflicts.push({
+          name: ws.name, branch: ws.branch, path: ws.path, files: [],
+          error: `main repo is on "${cur}", expected start branch "${start}"; left for manual merge`,
+        });
+      }
+      return { merged, conflicts, startBranch: start };
+    }
     for (const [key, ws] of _acquired) {
       if (!key.startsWith(`${runId}/`)) continue;
       // 1) 脏 worktree 自动 commit(write agent 通常只改文件不 commit)。
