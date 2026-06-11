@@ -198,6 +198,20 @@ function parseInput(raw) {
   }
 }
 
+// per-run latest 指针:POSIX 用 symlink `latest`→<runId>;win32 symlink 常无权限,
+// 显式降级写 latest.txt(纯文本指针),不静默坏。
+async function writeLatestPointer(runsRoot, runId) {
+  const { symlink, unlink, writeFile, mkdir } = await import("node:fs/promises");
+  await mkdir(runsRoot, { recursive: true }).catch(() => {});
+  const link = resolve(runsRoot, "latest");
+  try {
+    await unlink(link).catch(() => {});
+    await symlink(runId, link, "dir");
+  } catch {
+    await writeFile(resolve(runsRoot, "latest.txt"), runId + "\n");
+  }
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────
 
 /**
@@ -252,16 +266,11 @@ export async function main({
 
   // ── --list ─────────────────────────────────────────────────────────
   if (args.list) {
-    let flows;
-    try {
-      flows = await discoverFlows(root);
-    } catch (err) {
-      stderr.write(`Error: failed to discover flows in ${root}: ${err.message}\n`);
-      return 1;
-    }
-    for (const f of flows) {
-      stdout.write(`${f.name}: ${f.meta.description}\n`);
-    }
+    let result;
+    try { result = await discoverFlows(root); }
+    catch (err) { stderr.write(`Error: failed to discover flows in ${root}: ${err.message}\n`); return 1; }
+    for (const f of result.flows) stdout.write(`${f.name}: ${f.meta.description}\n`);
+    for (const e of result.errors) stderr.write(`warning: flow "${e.name}" skipped: ${e.error}\n`);
     return 0;
   }
 
@@ -315,28 +324,21 @@ export async function main({
     return 1;
   }
 
-  // Find the flow — try discoverFlows first, then loadFlow as fallback
-  let flow;
-  try {
-    const discovered = await discoverFlows(root);
-    flow = discovered.find((f) => f.name === args.name);
-  } catch {
-    // discoverFlows may fail if the directory doesn't exist or has bad flows;
-    // fall through to loadFlow.
+  // P2-26:run 路径直接 loadFlow(命中即用,不再 discoverFlows 执行所有 flow 顶层代码)。
+  // 搜索顺序:--workflows/默认 root → config.flows 指定的各目录。
+  const searchRoots = [root, ...((config && config.flows) || [])];
+  let flow = null;
+  for (const r of searchRoots) {
+    try { flow = await loadFlow(r, args.name); break; } catch { /* 下一个目录 */ }
   }
-
   if (!flow) {
-    try {
-      flow = await loadFlow(root, args.name);
-      // loadFlow returns { name, meta, run, path } — compatible with runFlow
-    } catch (err) {
-      stderr.write(`Error: flow "${args.name}" not found in ${root}\n`);
-      return 1;
-    }
+    stderr.write(`Error: flow "${args.name}" not found in ${searchRoots.join(", ")}\n`);
+    return 1;
   }
 
   // Create context and run
   const ctx = runtime.createCtx(input, { cwd });
+  await writeLatestPointer(runsRoot, ctx.runId).catch(() => {});
   try {
     const result = await runFlow(runtime, flow, ctx, input);
     if (result !== undefined) {

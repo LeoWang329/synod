@@ -8,6 +8,7 @@
 // code paths.
 
 import path from "node:path";
+import os from "node:os";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { doctor, openBackend as realOpenBackend } from "./backend.mjs";
@@ -31,6 +32,7 @@ function parseArgs(argv) {
     mesh: undefined, // tri-state: undefined → fall back to SYNOD_MESH env (see main())
     tasks: [],
     reap: false,
+    runs: false,
     _unknown: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -68,6 +70,9 @@ function parseArgs(argv) {
         break;
       case "--reap":
         out.reap = true;
+        break;
+      case "--runs":
+        out.runs = true;
         break;
       case "--mesh":
         // Mirror parseOpenArgs: reject a conflicting flag, allow idempotent repeat.
@@ -149,6 +154,7 @@ function printHelp(stdout = process.stdout) {
       "  --effort <E>          Reasoning effort (omp, e.g. high/xhigh)",
       "  --write               Allow file writes (default: read-only)",
       "  --reap                Kill orphaned agent processes from crashed runs, then exit",
+      "  --runs                List recent flow runs, then exit",
       "  --task <agent>:<msg>  Run task non-interactively (repeatable)",
       "  --mesh                Inject orchestration skill into spawned agents (default: off)",
       "  --no-mesh             Force mesh off, overriding the SYNOD_MESH env var",
@@ -272,6 +278,18 @@ async function main({
       `reap: scanned ${r.scanned}, reaped ${r.reaped.length}, skipped ${r.skipped.length}` +
       `${r.unsupported ? " (win32: unsupported)" : ""}\n`,
     );
+    return 0;
+  }
+
+  if (args.runs) {
+    const { listRuns } = await import("./runs.mjs");
+    const root = path.resolve(env.SYNOD_HOME || os.homedir(), ".synod", "runs");
+    const runs = listRuns(root);
+    if (!runs.length) { stdout.write("No runs.\n"); return 0; }
+    for (const r of runs) {
+      const when = r.startedAt ? new Date(r.startedAt).toISOString() : "?";
+      stdout.write(`${r.runId}  ${when}  ${r.status}\n`);
+    }
     return 0;
   }
 

@@ -30,6 +30,11 @@ function validateLayer(cfg, file) {
       }
     }
   }
+  if (cfg.flows !== undefined) {
+    if (!Array.isArray(cfg.flows) || cfg.flows.some((d) => typeof d !== "string" || !d)) {
+      fail(file, `flows must be an array of non-empty directory strings`);
+    }
+  }
   for (const [name, b] of Object.entries(cfg.backends ?? {})) {
     if (!b || typeof b !== "object") fail(file, `backends.${name} must be an object`);
     if (b.type === "cli") {
@@ -76,13 +81,14 @@ export async function loadConfig({ cwd = process.cwd(), home = os.homedir() } = 
     path.join(home, ".synod", "config.mjs"),
     path.join(cwd, "synod.config.mjs"),
   ];
-  const merged = { agents: {}, backends: {}, defaults: {}, sources: [] };
+  const merged = { agents: {}, backends: {}, defaults: {}, flows: [], sources: [] };
   for (const file of files) {
     const cfg = await loadLayer(file);
     if (!cfg) continue;
     merged.sources.push(file);
     Object.assign(merged.agents, cfg.agents ?? {});
     const dir = path.dirname(file);
+    for (const d of cfg.flows ?? []) merged.flows.push(path.resolve(dir, d));
     for (const [name, b] of Object.entries(cfg.backends ?? {})) {
       if (b.type === "module") {
         merged.backends[name] = { ...b, path: path.resolve(dir, b.path) };

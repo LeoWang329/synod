@@ -453,52 +453,29 @@ function scanImports(source) {
 export async function discoverFlows(dir) {
   const entries = await readdir(dir, { withFileTypes: true });
   const flows = [];
-
+  const errors = [];
   for (const entry of entries) {
     if (!entry.isFile() || extname(entry.name) !== ".mjs") continue;
-
-    const name = entry.name.slice(0, -4); // strip .mjs
+    const name = entry.name.slice(0, -4);
     const absPath = resolve(dir, entry.name);
     const url = pathToFileURL(absPath).href;
-
-    // ── 1. Read source + lint BEFORE any module execution ──────────
-    const source = await readFile(absPath, "utf-8");
     try {
+      const source = await readFile(absPath, "utf-8");
       scanImports(source);
-    } catch (lintErr) {
-      throw new Error(`Flow "${name}": ${lintErr.message}`);
-    }
-
-    // ── 2. Lint passed — safe to import ────────────────────────────
-    let mod;
-    try {
-      mod = await import(url);
+      const mod = await import(url);
+      if (!mod.meta || typeof mod.meta.description !== "string" || !mod.meta.description.trim()) {
+        throw new Error("must export meta.description (non-empty string)");
+      }
+      if (typeof mod.run !== "function") {
+        throw new Error("must export async function run(ctx, input)");
+      }
+      flows.push({ name, meta: mod.meta, run: mod.run, path: absPath });
     } catch (err) {
-      throw new Error(
-        `Flow "${name}": failed to load — ${err.message}`,
-        { cause: err },
-      );
+      // P2-16:单个坏 flow 不再炸整列表——降级为 errors 条目,调用方决定是否警告。
+      errors.push({ name, error: err.message });
     }
-
-    // ── 3. Validate meta ───────────────────────────────────────────
-    if (!mod.meta || typeof mod.meta.description !== "string" ||
-      !mod.meta.description.trim()) {
-      throw new Error(
-        `Flow "${name}": must export meta.description (non-empty string)`,
-      );
-    }
-
-    // ── 4. Validate run ────────────────────────────────────────────
-    if (typeof mod.run !== "function") {
-      throw new Error(
-        `Flow "${name}": must export async function run(ctx, input)`,
-      );
-    }
-
-    flows.push({ name, meta: mod.meta, run: mod.run, path: absPath });
   }
-
-  return flows;
+  return { flows, errors };
 }
 
 /**
