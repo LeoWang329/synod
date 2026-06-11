@@ -30,6 +30,8 @@
 // a specific session label.
 
 import { parseRelay } from "./relay.mjs";
+import { HELP_TEXT, helpForCommand } from "./ui/help.mjs";
+import { NO_SESSION_HINT } from "./session-manager.mjs";
 
 /**
  * Parse "/open --agent x --model y ..." into an options object.
@@ -250,11 +252,11 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
         return { redraw: true };
       }
       if (!sm._sessions.has(parsed.from)) {
-        stderr.write(`No session "${parsed.from}"\n`);
+        stderr.write(`No session "${parsed.from}"\n${NO_SESSION_HINT}`);
         return { redraw: true };
       }
       if (!sm._sessions.has(parsed.to)) {
-        stderr.write(`No session "${parsed.to}"\n`);
+        stderr.write(`No session "${parsed.to}"\n${NO_SESSION_HINT}`);
         return { redraw: true };
       }
       try {
@@ -353,6 +355,12 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
       }
       stdout.write(`Resuming run "${runId}"...\n`);
       return _resumeFlow(runId).then(() => ({ redraw: true }), () => ({ redraw: true }));
+    }
+
+    if (cmd === "/help") {
+      const topic = rest[0];
+      stdout.write(topic ? helpForCommand(topic) : HELP_TEXT + "\n");
+      return { redraw: true };
     }
 
     // Unknown / command

@@ -49,6 +49,9 @@ function createSendQueue(session, label, onTurnComplete) {
   };
 }
 
+/** No session / No current session 错误的「下一步」建议行(§3.3)。 */
+export const NO_SESSION_HINT = "  hint: /sessions 查看活跃会话;/open 新开一个\n";
+
 // ── Doctor gate ──────────────────────────────────────────────────────
 function checkAgentAvailable(agent, report, stderr = process.stderr) {
   const entry = report[agent];
@@ -211,7 +214,9 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
 
     const info = target ? _sessions.get(target) : _sessions.get(_currentLabel);
     if (!info) {
-      stderr.write(target ? `No session "${target}"\n` : "No current session. Use /open to create one.\n");
+      stderr.write(
+        (target ? `No session "${target}"\n` : "No current session. Use /open to create one.\n") + NO_SESSION_HINT,
+      );
       return false;
     }
 
@@ -228,7 +233,7 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
       _currentLabel = target;
       return true;
     }
-    stderr.write(`No session "${target}"\n`);
+    stderr.write(`No session "${target}"\n${NO_SESSION_HINT}`);
     return false;
   }
 
