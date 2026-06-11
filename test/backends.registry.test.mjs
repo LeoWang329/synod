@@ -61,9 +61,9 @@ test("未注册名 → 抛错并列出已注册名", async () => {
   );
 });
 
-test("doctor() 聚合全部已注册 adapter", () => {
+test("doctor() 聚合全部已注册 adapter", async () => {
   registerBackend({ name: "t2-doc", doctor: () => ({ available: true, version: "9.9" }), open: async () => ({}) });
-  const r = doctor();
+  const r = await doctor();
   assert.equal(r["t2-doc"].version, "9.9");
   assert.ok("omp" in r && "codex" in r);
   _unregisterForTests("t2-doc");

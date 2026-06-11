@@ -117,6 +117,30 @@ test("agent write/mesh 非 boolean → 抛错;defaults 浅合并(后层覆盖)",
   assert.equal(cfg.defaults.effort, "low", "未覆盖的保留");
 });
 
+test("P2-39 type:cli 的相对 bin 按声明它的 config 层目录 resolve", async () => {
+  const { home, cwd } = makeDirs();
+  writeFileSync(join(cwd, "synod.config.mjs"), `export default {
+    backends: { local: { type: "cli", bin: "./bin/run.sh" } },
+  };`);
+  const cfg = await loadConfig({ cwd, home });
+  assert.equal(cfg.backends.local.bin, join(cwd, "bin", "run.sh"));
+});
+
+test("P2-39 裸命令名(无路径分隔符)不 resolve,留给 PATH 查找", async () => {
+  const { home, cwd } = makeDirs();
+  writeFileSync(join(cwd, "synod.config.mjs"), `export default {
+    backends: { c: { type: "cli", bin: "claude" } },
+  };`);
+  const cfg = await loadConfig({ cwd, home });
+  assert.equal(cfg.backends.c.bin, "claude");
+});
+
+test("P2-36 config 文件语法错 → 抛错带文件路径(分得清是哪层)", async () => {
+  const { home, cwd } = makeDirs();
+  writeFileSync(join(cwd, "synod.config.mjs"), `export default { this is not valid`);
+  await assert.rejects(loadConfig({ cwd, home }), /synod\.config\.mjs/);
+});
+
 test("registerConfigBackends:type:cli 注册 generic 适配器;与内置同名拒绝", async () => {
   const cfg = {
     backends: {

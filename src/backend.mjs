@@ -1645,12 +1645,12 @@ export function probeCliVersion(bin, versionArgs = ["--version"]) {
 /**
  * Aggregate availability of every registered backend adapter.
  *
- * @returns {Record<string, { available: boolean, version: string|null }>}
+ * @returns {Promise<Record<string, { available: boolean, version: string|null }>>}
  */
-export function doctor() {
+export async function doctor() {
   const result = {};
   for (const name of backendNames()) {
-    result[name] = getBackend(name).doctor();
+    result[name] = await getBackend(name).doctor();
   }
   return result;
 }

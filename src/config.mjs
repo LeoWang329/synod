@@ -59,7 +59,13 @@ function validateLayer(cfg, file) {
 
 async function loadLayer(file) {
   if (!fs.existsSync(file)) return null;
-  const mod = await import(pathToFileURL(file).href);
+  let mod;
+  try {
+    mod = await import(pathToFileURL(file).href);
+  } catch (err) {
+    // import 抛的 SyntaxError 只把文件名埋在 stack 里;cli 只打 message,分不清哪层。
+    throw new Error(`config error: failed to load — ${err.message} (in ${file})`, { cause: err });
+  }
   const cfg = mod.default;
   validateLayer(cfg, file);
   return cfg;
@@ -78,8 +84,14 @@ export async function loadConfig({ cwd = process.cwd(), home = os.homedir() } = 
     Object.assign(merged.agents, cfg.agents ?? {});
     const dir = path.dirname(file);
     for (const [name, b] of Object.entries(cfg.backends ?? {})) {
-      merged.backends[name] =
-        b.type === "module" ? { ...b, path: path.resolve(dir, b.path) } : { ...b };
+      if (b.type === "module") {
+        merged.backends[name] = { ...b, path: path.resolve(dir, b.path) };
+      } else if (b.type === "cli" && /[\\/]/.test(b.bin)) {
+        // 含路径分隔符的相对/绝对 bin 锚到声明它的 config 层目录;裸命令名留给 PATH。
+        merged.backends[name] = { ...b, bin: path.resolve(dir, b.bin) };
+      } else {
+        merged.backends[name] = { ...b };
+      }
     }
     Object.assign(merged.defaults, cfg.defaults ?? {});
   }

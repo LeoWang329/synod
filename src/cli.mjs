@@ -316,7 +316,7 @@ async function main({
     return 2;
   }
 
-  const report = doctor();
+  const report = await doctor();
   const names = backendNames();
   if (!names.includes(args.agent)) {
     stderr.write(`synod: --agent must be one of ${names.join(", ")} (got "${args.agent}")\n`);
