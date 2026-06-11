@@ -8,7 +8,6 @@
 // code paths.
 
 import path from "node:path";
-import readline from "node:readline";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { doctor, openBackend as realOpenBackend } from "./backend.mjs";
@@ -19,7 +18,8 @@ import { wireControl } from "./control-wire.mjs";
 import { createReplDispatch, parseOpenArgs } from "./repl-dispatch.mjs";
 import { loadConfig, registerConfigBackends } from "./config.mjs";
 import { main as flowMain } from "./flow.mjs";
-import { installShutdownHandlers, closeAllLiveSessionsSync } from "./shutdown.mjs";
+import { createInputRouter } from "./input-router.mjs";
+import { installShutdownHandlers, closeAllLiveSessionsSync, gracefulShutdown } from "./shutdown.mjs";
 
 // ── CLI parsing ──────────────────────────────────────────────────────
 function parseArgs(argv) {
@@ -172,46 +172,6 @@ function printHelp(stdout = process.stdout) {
 }
 
 
-// ── REPL ─────────────────────────────────────────────────────────────
-function createRepl({ prompt, onLine, onClose, stdin = process.stdin, stdout = process.stdout }) {
-  const rl = readline.createInterface({
-    input: stdin,
-    output: stdout,
-    terminal: stdin.isTTY ?? false,
-  });
-  // Start paused so piped input isn't consumed before sessions are ready.
-  rl.pause();
-  let exitRequested = false;
-  let closed = false;
-
-  rl.on("line", (line) => {
-    if (exitRequested) return;
-    const text = line.trim();
-    if (!text) {
-      stdout.write(prompt);
-      return;
-    }
-    void onLine(text);
-  });
-
-  rl.on("close", () => {
-    if (closed) return;
-    closed = true;
-    void onClose();
-  });
-
-  return {
-    resume() { rl.resume(); },
-    writePrompt() {
-      if (!exitRequested && !closed) stdout.write(prompt);
-    },
-    closeRl() {
-      exitRequested = true;
-      rl.close();
-    },
-  };
-}
-
 // ── Non-interactive task runner ──────────────────────────────────────
 async function runTasks(tasks, report, baseOpts, { openBackend, stdout = process.stdout, stderr = process.stderr } = {}) {
   // Pre-check all agents (before opening sessions, so return 3 vs 4 is distinct)
@@ -290,6 +250,9 @@ async function main({
   stderr = process.stderr,
   argv = process.argv,
   env = process.env,
+  // /flow resolves flows from the synod package's workflows/ dir by default;
+  // injectable so integration tests can point it at a temp project dir.
+  workflowsRoot,
 } = {}) {
   const args = parseArgs(argv.slice(2));
   if (args._help) {
@@ -353,8 +316,20 @@ async function main({
   let resolveExit = () => {};
   const exitPromise = new Promise((resolve) => { resolveExit = resolve; });
 
-  // Create repl reference first so onIdle callback can reference repl.writePrompt
-  let repl;
+  // ── InputRouter (§4.8 single stdin owner, P1-8) ────────────────────────
+  // One readline.Interface for the whole process.  The REPL default route runs
+  // through router.onLine; flow approve()/question() temporarily claim the next
+  // line via router.claim (no second readline → no stdin tug-of-war).  Start
+  // paused so piped input isn't consumed before the default session is ready
+  // (resumed below, after sm.open).
+  let _exiting = false;     // /exit requested or graceful SIGINT in progress
+  let _closed = false;      // rl 'close' fired (onClose ran) — guards stray prompts
+  const router = createInputRouter({ stdin, stdout });
+  router.pause();
+  // Prompt redraw, guarded so no stray "> " is written after exit/close
+  // (mirrors the old createRepl writePrompt guard).
+  const writePrompt = () => { if (!_exiting && !_closed) stdout.write("> "); };
+
   // ── Relay registry (two-phase: created before sm, enqueue wired after) ──
   let _smForRelay = null;
   const registry = createRelayRegistry((to, msg) => {
@@ -368,7 +343,7 @@ async function main({
     openBackend, stdout, stderr, report, cwd,
     defaults: { model: args.model, effort: args.effort, write: args.write, mesh },
     onIdle: (label) => {
-      if (repl && label === sm.currentLabel) repl.writePrompt();
+      if (label === sm.currentLabel) writePrompt();
     },
     errorLeadingNewline: true,
     onTurnComplete: (label, result) => {
@@ -382,12 +357,27 @@ async function main({
   // so /flow works regardless of where synod was started; agents still run in
   // `cwd`.  Track in-flight runs so onClose can await them — a flow dropped on
   // /exit would orphan its agent sessions (violates the no-residue invariant).
-  const flowsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "workflows");
+  // Each run gets its own AbortController so a TTY Ctrl-C (router SIGINT first
+  // strike) cancels active flows cooperatively.  The flow io is the shared
+  // router: approve()/question() claim the next human line (P1-8).
+  const flowsRoot = workflowsRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "workflows");
   const _pendingFlows = new Set();
+  const _activeFlows = new Set();   // { ctrl } — Ctrl-C first strike aborts these
+  const flowIo = {
+    stdout, stdin,
+    question: (prompt, { signal } = {}) => router.claim({ prompt, signal }),
+  };
   const runFlow = (flowArgv) => {
-    const p = flowMain({ argv: flowArgv, stdout, stderr, openBackend, workflowsRoot: flowsRoot, cwd, config });
+    const ctrl = new AbortController();
+    const handle = { ctrl };
+    _activeFlows.add(handle);
+    const p = flowMain({
+      argv: flowArgv, stdout, stderr, openBackend,
+      workflowsRoot: flowsRoot, cwd, config,
+      io: flowIo, signal: ctrl.signal,
+    });
     _pendingFlows.add(p);
-    p.finally(() => _pendingFlows.delete(p)).catch(() => {});
+    p.finally(() => { _pendingFlows.delete(p); _activeFlows.delete(handle); }).catch(() => {});
     return p;
   };
 
@@ -404,60 +394,91 @@ async function main({
     sm, registry, stderr, dispatch,
   });
   _composedOnTurnComplete = composedOnTurnComplete;
-  repl = createRepl({
-    prompt: "> ",
-    stdin,
-    stdout,
-    // onLine is synchronous: dispatch() returns synchronously for all commands
-    // except /open (which returns a Promise).  Keeping /exit synchronous is
-    // critical for piped stdin — closeRl() must run before the next 'line' event.
-    onLine: (line) => {
-      const r = dispatch(line, { source: "human" });
-      if (r && typeof r.then === "function") {
-        r.then((res) => { if (res.redraw) repl.writePrompt(); });
-      } else if (r.exit) {
-        repl.closeRl();
-      } else if (r.redraw) {
-        repl.writePrompt();
-      }
-    },
 
-    onClose: async () => {
-      let exitCode = 0;
-      try {
-        // Let any in-flight /flow runs finish first so they tear down their own
-        // agent sessions (otherwise /exit would orphan them).
-        if (_pendingFlows.size > 0) {
-          await Promise.allSettled([..._pendingFlows]);
-        }
-        await sm.drainAll();
-        // P1-11: 等在飞 fence dispatch 落地(其 /open 的新会话因此进入 _sessions),
-        // 再排一轮队尾——之后 closeAll 才能把它们一并关掉,不留窗口外的新会话。
-        await drainControl();
-        await sm.drainAll();
-      } catch (err) {
-        exitCode = 1;
-        stderr.write(`synod: ${err.stack || err.message}\n`);
-      } finally {
-        // Clean up relay rules for all sessions being closed
-        for (const [label] of sm._sessions) {
-          registry.removeForLabel(label);
-        }
-        // Flush any trailing buffered text
-        sm.flushAll();
-        sm.closeAll();
-        resolveExit(exitCode);
+  // ── onClose: drain in-flight work, then tear down all sessions ─────────
+  // Migrated verbatim from the old createRepl onClose; now driven by the
+  // router's rl 'close' event.  Idempotent via the _closed guard.
+  async function onClose() {
+    if (_closed) return;
+    _closed = true;
+    let exitCode = 0;
+    try {
+      // Let any in-flight /flow runs finish first so they tear down their own
+      // agent sessions (otherwise /exit would orphan them).
+      if (_pendingFlows.size > 0) {
+        await Promise.allSettled([..._pendingFlows]);
       }
-    },
+      await sm.drainAll();
+      // P1-11: 等在飞 fence dispatch 落地(其 /open 的新会话因此进入 _sessions),
+      // 再排一轮队尾——之后 closeAll 才能把它们一并关掉,不留窗口外的新会话。
+      await drainControl();
+      await sm.drainAll();
+    } catch (err) {
+      exitCode = 1;
+      stderr.write(`synod: ${err.stack || err.message}\n`);
+    } finally {
+      // Clean up relay rules for all sessions being closed
+      for (const [label] of sm._sessions) {
+        registry.removeForLabel(label);
+      }
+      // Flush any trailing buffered text
+      sm.flushAll();
+      sm.closeAll();
+      resolveExit(exitCode);
+    }
+  }
+  router.rl.on("close", onClose);
+
+  // ── REPL default route: dispatch each human line ──────────────────────
+  // dispatch() is synchronous for every command except /open and /flow (both
+  // return a Promise).  Keeping /exit synchronous is critical for piped stdin —
+  // router.close() must run before the next buffered 'line' event (the _exiting
+  // guard then drops any already-queued lines, as the old exitRequested did).
+  router.onLine((line) => {
+    if (_exiting) return;
+    const text = line.trim();
+    if (!text) { writePrompt(); return; }
+    const r = dispatch(text, { source: "human" });
+    if (r && typeof r.then === "function") {
+      r.then((res) => { if (res.redraw) writePrompt(); });
+    } else if (r.exit) {
+      _exiting = true;
+      router.close();            // → rl 'close' → onClose
+    } else if (r.redraw) {
+      writePrompt();
+    }
+  });
+
+  // ── rl SIGINT exit matrix (raw-mode Ctrl-C, P1-28) ────────────────────
+  // Only fires in a TTY (readline intercepts Ctrl-C); piped/CI SIGINT is handled
+  // by installShutdownHandlers at the process level.  First strike: abort active
+  // flows (cooperative cancel) if any, else graceful shutdown; second strike:
+  // force exit.  Output strings match shutdown.mjs interactiveSigint.
+  let _sigintCount = 0;
+  router.onSigint(() => {
+    if (_activeFlows.size > 0 && _sigintCount === 0) {
+      _sigintCount += 1;
+      stderr.write("\nInterrupted. Cleaning up...\n");
+      for (const h of _activeFlows) h.ctrl.abort();
+      return;
+    }
+    _sigintCount += 1;
+    if (_sigintCount === 1) {
+      stderr.write("\nInterrupted. Cleaning up...\n");
+      gracefulShutdown().finally(() => { _exiting = true; router.close(); });
+    } else {
+      stderr.write("\nForce exiting...\n");
+      closeAllLiveSessionsSync();
+      process.exit(1);
+    }
   });
 
   // ── Open default session ───────────────────────────────────────────
-  // Created *after* repl so the status handler can reference repl.writePrompt.
   const defaultLabel = await sm.open({ agent: args.agent, announce: false });
   if (!defaultLabel) return 3;
 
-  repl.resume();
-  repl.writePrompt();
+  router.resume();
+  writePrompt();
 
   return await exitPromise;
 }

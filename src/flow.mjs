@@ -225,6 +225,12 @@ export async function main({
   workflowsRoot: defaultRoot = resolve(process.cwd(), "workflows"),
   cwd = process.cwd(),
   config: injectedConfig,
+  // Shared I/O + run-level abort, injected by the REPL (cli.mjs /flow) so flow
+  // approve()/question() route through the single InputRouter and a CLI Ctrl-C
+  // can cancel the run.  Standalone flow.mjs leaves these undefined → runtime
+  // falls back to defaultIo() (its own readline) and no external signal.
+  io: injectedIo,
+  signal: externalSignal,
   // Inject real fs by default; tests pass a noop/in-memory sink
   fs: realFs = { writeFile, appendFile },
 } = {}) {
@@ -298,6 +304,8 @@ export async function main({
       fs: realFs,
       progress: progressSink,
       config,
+      io: injectedIo,             // REPL injects the shared router io; standalone → defaultIo()
+      signal: externalSignal,     // CLI Ctrl-C link; standalone → undefined
     });
   } catch (err) {
     stderr.write(`Error: failed to create runtime: ${err.message}\n`);
