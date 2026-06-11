@@ -7,8 +7,9 @@
  *
  * ## Session lifecycle
  *
- * The session is opened once before the loop and closed in a `finally`
- * block — it is always closed regardless of send errors.
+ * The session is opened lazily on the first non-replay turn and closed in
+ * a `finally` block — it is always closed regardless of send errors.
+ * If every turn is served by replay, the session is never opened.
  *
  * ## Logging
  *
@@ -26,7 +27,7 @@
 import { makeResolveOpts } from "./resolve-opts.mjs";
 import { raceAbort } from "./abortable.mjs";
 
-export function createAgentLoop({ openBackend, logger, config, progress, getSignal }) {
+export function createAgentLoop({ openBackend, logger, config, progress, getSignal, getReplay }) {
   /** Best-effort await — never throws. */
   const bg = (p) => p.catch(() => {});
 
@@ -79,52 +80,58 @@ export function createAgentLoop({ openBackend, logger, config, progress, getSign
       throw new Error("agentLoop: maxTurns must be a positive integer");
     }
 
-    // ── Open session ────────────────────────────────────────────────
-    let session;
-    try {
-      session = await openBackend({
-        agent: agentName,
-        model,
-        effort,
-        write,
-        mesh,
-        systemPrompt,
-        cwd: ctx.cwd,
-      });
-    } catch (openErr) {
+    const sink = progress;
+
+    // 会话惰性开:全 turn 命中重放时绝不开 agent(resume 第一不变量)。
+    let session = null;
+    let sessionId = null;
+    let onDelta = null;
+
+    async function ensureSession() {
+      if (session) return;
+      try {
+        session = await openBackend({
+          agent: agentName,
+          model,
+          effort,
+          write,
+          mesh,
+          systemPrompt,
+          cwd: ctx.cwd,
+        });
+      } catch (openErr) {
+        await bg(
+          logger.logStep(ctx, {
+            node: agentName,
+            type: "agentLoop",
+            attempt: 1,
+            error: openErr,
+            meta: { agent: agentName, model: model ?? null },
+          }),
+        );
+        throw openErr;
+      }
+
+      sessionId = session.summary().id;
+
+      // session:open log is best-effort
       await bg(
-        logger.logStep(ctx, {
-          node: agentName,
-          type: "agentLoop",
-          attempt: 1,
-          error: openErr,
-          meta: { agent: agentName, model: model ?? null },
+        logger.logSession(ctx, {
+          event: "session:open",
+          sessionId,
+          agent: agentName,
+          model: model ?? null,
+          reused: false,
         }),
       );
-      throw openErr;
-    }
 
-    const sessionId = session.summary().id;
-
-    // session:open log is best-effort
-    await bg(
-      logger.logSession(ctx, {
-        event: "session:open",
-        sessionId,
-        agent: agentName,
-        model: model ?? null,
-        reused: false,
-      }),
-    );
-
-    // ── Progress sink (delta passthrough across all turns) ──────────
-    const sink = progress;
-    let onDelta = null;
-    if (sink) {
-      onDelta = (chunk) => {
-        try { sink.emit({ type: "delta", agent: agentName, model, text: chunk }); } catch {}
-      };
-      session.on("delta", onDelta);
+      // ── Progress sink (delta passthrough across all turns) ──────────
+      if (sink) {
+        onDelta = (chunk) => {
+          try { sink.emit({ type: "delta", agent: agentName, model, text: chunk }); } catch {}
+        };
+        session.on("delta", onDelta);
+      }
     }
 
     // ── Loop ────────────────────────────────────────────────────────
@@ -134,6 +141,16 @@ export function createAgentLoop({ openBackend, logger, config, progress, getSign
       for (let turn = 1; turn <= maxTurns; turn++) {
         const promptText =
           typeof prompt === "function" ? prompt(turn, lastOutput) : prompt;
+
+        // ── resume 重放:命中即用 logged 输出,不开 agent ──
+        const rep = getReplay?.(ctx.runId, { node: agentName, input: promptText });
+        if (rep?.hit) {
+          lastOutput = rep.output ?? "";
+          if (until(lastOutput, turn)) return lastOutput;
+          continue;
+        }
+
+        await ensureSession();
 
         if (sink) {
           try { sink.emit({ type: "start", agent: agentName, model }); } catch {}
@@ -183,17 +200,19 @@ export function createAgentLoop({ openBackend, logger, config, progress, getSign
       // maxTurns reached
       return lastOutput;
     } finally {
-      if (onDelta) session.off("delta", onDelta);
-      session.close();
-      await bg(
-        logger.logSession(ctx, {
-          event: "session:close",
-          sessionId,
-          agent: agentName,
-          model: model ?? null,
-          reused: false,
-        }),
-      );
+      if (onDelta && session) session.off("delta", onDelta);
+      if (session) {
+        session.close();
+        await bg(
+          logger.logSession(ctx, {
+            event: "session:close",
+            sessionId,
+            agent: agentName,
+            model: model ?? null,
+            reused: false,
+          }),
+        );
+      }
     }
   }
 

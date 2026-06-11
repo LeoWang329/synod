@@ -34,6 +34,7 @@ export function createAgent({
   progress,
   config,
   getSignal,
+  getReplay,
 }) {
   /** Best-effort await — never throws. */
   const bg = (p) => p.catch(() => {});
@@ -99,6 +100,10 @@ export function createAgent({
     ctx,
     { agent: agentName, model, effort, write, mesh, systemPrompt, prompt, reuse, signal: optsSignal },
   ) {
+    // ── resume 重放(§4.12-1):命中即回放 logged 输出,绝不 openBackend ──
+    const rep = getReplay?.(ctx.runId, { node: agentName, input: prompt });
+    if (rep?.hit) return rep.output ?? "";
+
     const sink = progress;
 
     const runState = getRunState(ctx.runId);
