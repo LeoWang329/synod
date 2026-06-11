@@ -69,7 +69,8 @@ export function createAgent({
   }
 
   function sessionKeyOf({ agent: agentName, model, effort, write, mesh, systemPrompt }) {
-    return `${agentName}:${model ?? ""}:${effort ?? ""}:${write ? "w" : "r"}:${mesh ? "m" : ""}:${systemPrompt ?? ""}`;
+    // 结构化 key:避免 model/systemPrompt 内含分隔符导致不同字段元组碰撞同一 key。
+    return JSON.stringify([agentName, model ?? "", effort ?? "", !!write, !!mesh, systemPrompt ?? ""]);
   }
 
   function validateAgentArgs(ctx, { agent: agentName, model, prompt }) {

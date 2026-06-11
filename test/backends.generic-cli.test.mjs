@@ -131,6 +131,28 @@ test("abort() 杀在飞进程", async () => {
   session.close();
 });
 
+test("abort() 对 SIGTERM 免疫的进程也最终消亡(SIGKILL 兜底)", async () => {
+  // 写一个忽略 SIGTERM 的临时 CLI fixture(内联到 tmp,免改 fixtures 目录)
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(path.join(tmpdir(), "synod-abort-"));
+  const script = path.join(dir, "immune.mjs");
+  writeFileSync(script, 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);');
+  const adapter = makeGenericCliAdapter("immune", {
+    type: "cli", bin: NODE, args: [script], promptVia: "arg",
+  });
+  const session = await adapter.open({ cwd });
+  const p = session.send("x", { wait: true, timeout_ms: 10_000 }).catch(() => "ended");
+  await new Promise((r) => setTimeout(r, 300));
+  const pid = session.proc?.pid;
+  assert.ok(pid, "应有在飞进程");
+  await session.abort();                 // SIGTERM(被忽略)+ scheduleForceKill 3s 后 SIGKILL
+  await new Promise((r) => setTimeout(r, 3600));   // 等过 3s 宽限
+  assert.throws(() => process.kill(pid, 0), "SIGTERM 免疫进程也应被 SIGKILL 兜底杀死");
+  session.close();
+  await p;
+});
+
 // 注入式 fake 子进程:EventEmitter + 可读 stdout/stderr + 可写 stdin,
 // pid=null(无真实 OS pid,验证组杀/PID 记录对 fake 安全),microtask 内即收 close。
 function fakeProc() {

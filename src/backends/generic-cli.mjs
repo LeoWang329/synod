@@ -141,7 +141,10 @@ class GenericCliSession extends EventEmitter {
 
   async abort() {
     const proc = this.proc;
-    if (proc?.pid) terminateProcessTree(proc.pid, "SIGTERM", { group: this._detached && proc instanceof ChildProcess });
+    if (proc?.pid) {
+      terminateProcessTree(proc.pid, "SIGTERM", { group: this._detached && proc instanceof ChildProcess });
+      scheduleForceKill(proc, 3000, { group: this._detached && proc instanceof ChildProcess });
+    }
     return { aborted: true, session_id: this.id };
   }
 
