@@ -59,10 +59,10 @@ export function writeCheckpoint(runsRoot, runId, patch = {}) {
   const now = Date.now();
   const next = {
     runId,
-    startedAt: prev.startedAt ?? now,
     ...prev,
     ...patch,
     runId, // 锁死 runId 不被 patch 覆盖
+    startedAt: prev.startedAt ?? now, // 锁死 startedAt:首写后绝不被 patch 覆盖
     updatedAt: now,
   };
   fs.writeFileSync(checkpointPath(runsRoot, runId), JSON.stringify(next, null, 2) + "\n");

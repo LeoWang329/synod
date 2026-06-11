@@ -41,8 +41,11 @@ export async function parseRunLog(runDir) {
     if (e.event === "step:started") {
       started.set(e.stepId, e);
     } else if (e.event === "step:succeeded") {
-      succeeded.set(e.stepId, e);
-      order.push(e.stepId);
+      // 按 stepId 配对:仅收有对应 started、且未重复的 succeeded(孤立/重复行跳过)。
+      if (started.has(e.stepId) && !succeeded.has(e.stepId)) {
+        succeeded.set(e.stepId, e);
+        order.push(e.stepId);
+      }
     } else if (e.event === "step:failed") {
       sawFailure = true;
       if (failedNode === null) failedNode = e.node ?? null;
