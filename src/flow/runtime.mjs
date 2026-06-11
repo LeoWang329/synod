@@ -159,7 +159,7 @@ export function createRuntime({
     getSignal: signalFor,
   });
 
-  const bash = createBash({ logger });
+  const bash = createBash({ logger, getSignal: signalFor });
 
   const agentLoop = createAgentLoop({
     openBackend: resolvedOpenBackend,
@@ -169,7 +169,7 @@ export function createRuntime({
     getSignal: signalFor,
   });
 
-  const approve = createApprove({ io: resolvedIo, logger });
+  const approve = createApprove({ io: resolvedIo, logger, getSignal: signalFor });
 
   const reviseWithHuman = createReviseWithHuman({
     agent,

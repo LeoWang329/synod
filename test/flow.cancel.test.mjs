@@ -60,3 +60,24 @@ test("agentLoop 同样接 signal", async () => {
   setTimeout(() => runtime.abortRun(ctx), 30);
   await assert.rejects(p, (e) => e.name === "AbortError");
 });
+
+test("abortRun 取消在跑的 bash(SIGTERM 杀子进程)", async () => {
+  const runtime = createRuntime({ openBackend: async () => null, fs: nullFs, clock: () => 0 });
+  const ctx = runtime.createCtx(undefined, { cwd: process.cwd() });
+  const p = runtime.bash(ctx, "sleep 5");          // 长命令
+  setTimeout(() => runtime.abortRun(ctx), 50);
+  const r = await p;                               // bash 不抛:返回非零 code(被杀)
+  assert.notEqual(r.code, 0, "被 abort 的 bash 应以非零 code 收口");
+});
+
+test("approve 缺省回落 run-level signal:abortRun → { aborted:true }", async () => {
+  const runtime = createRuntime({
+    openBackend: async () => null, fs: nullFs, clock: () => 0,
+    io: { stdout: { write() {} }, stdin: {}, question: () => new Promise(() => {}) }, // 永不应答
+  });
+  const ctx = runtime.createCtx(undefined, { cwd: "/tmp" });
+  const p = runtime.approve(ctx, { content: "ok?" });
+  setTimeout(() => runtime.abortRun(ctx), 30);
+  const r = await p;
+  assert.equal(r.aborted, true, "run abort 应让 approve 协作返回 aborted");
+});

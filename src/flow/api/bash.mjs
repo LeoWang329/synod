@@ -8,9 +8,9 @@ const execAsync = promisify(exec);
  *
  * Accepts injected logger so the primitive can write step log entries.
  */
-export function createBash({ logger }) {
+export function createBash({ logger, getSignal }) {
   /**
-   * bash(ctx, cmd, { cwd? }) — run a shell command.
+   * bash(ctx, cmd, { cwd?, signal? }) — run a shell command.
    *
    * Returns { stdout, stderr, code }.  Never throws on command failure
    * (non-zero exit is returned, not thrown).
@@ -23,10 +23,13 @@ export function createBash({ logger }) {
    * @param {object} ctx    – pure-data context
    * @param {string} cmd    – shell command string
    * @param {object} [opts]
-   * @param {string} [opts.cwd] – working directory (default: ctx.cwd)
+   * @param {string} [opts.cwd]    – working directory (default: ctx.cwd)
+   * @param {AbortSignal} [opts.signal] – abort token (default: run-level signal)
    * @returns {Promise<{stdout:string, stderr:string, code:number}>}
    */
-  async function bash(ctx, cmd, { cwd } = {}) {
+  async function bash(ctx, cmd, { cwd, signal } = {}) {
+    const sig = signal ?? getSignal?.(ctx.runId);
+
     // ── 1. Execute the command ─────────────────────────────────────
     let stdout;
     let stderr;
@@ -38,6 +41,7 @@ export function createBash({ logger }) {
         encoding: "utf-8",
         timeout: 30_000,
         maxBuffer: 10 * 1024 * 1024,
+        signal: sig,            // §4.7-3: run abort → Node 杀子进程, reject AbortError
       });
       stdout = r.stdout;
       stderr = r.stderr;
@@ -45,7 +49,8 @@ export function createBash({ logger }) {
     } catch (err) {
       stdout = err.stdout ?? "";
       stderr = err.stderr ?? err.message;
-      code = err.code ?? 1;
+      // AbortError 无 numeric code → 归一为非零(被中断 ≠ 成功)
+      code = typeof err.code === "number" ? err.code : 1;
     }
 
     // ── 2. Write step log ──────────────────────────────────────────

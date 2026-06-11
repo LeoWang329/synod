@@ -49,7 +49,7 @@
 
 const ACCEPT_WORDS = new Set(["accept", "y", "yes", "ok", "approve"]);
 
-export function createApprove({ io, logger }) {
+export function createApprove({ io, logger, getSignal }) {
   /**
    * approve(ctx, opts) — present content to a human, wait for decision.
    *
@@ -68,8 +68,8 @@ export function createApprove({ io, logger }) {
     const {
       content,
       prompt = "(accept / feedback / /abort): ",
-      signal,
     } = opts;
+    const signal = opts.signal ?? getSignal?.(ctx.runId);   // §4.7-3: run-level fallback
 
     // ── Present content ────────────────────────────────────────────
     if (content != null) {
@@ -77,9 +77,25 @@ export function createApprove({ io, logger }) {
     }
 
     // ── Read one line via shared io.question ───────────────────────
+    // Race against signal so that even io.question implementations that
+    // don't honour the signal option are still interruptible.
     let line;
     try {
-      line = await io.question(prompt, { signal });
+      const ask = io.question(prompt, { signal });
+      if (signal) {
+        const abort = new Promise((_, rej) => {
+          if (signal.aborted) {
+            rej(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+          } else {
+            signal.addEventListener("abort", () =>
+              rej(Object.assign(new Error("Aborted"), { name: "AbortError" })),
+              { once: true });
+          }
+        });
+        line = await Promise.race([ask, abort]);
+      } else {
+        line = await ask;
+      }
     } catch (err) {
       if (err?.name === "AbortError") {
         const result = { aborted: true };
