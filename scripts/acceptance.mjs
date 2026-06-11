@@ -1046,7 +1046,7 @@ async function test_E4_false_positive_immunity(ompOk, codexOk) {
 async function main() {
   console.log("Synod acceptance tests\n");
 
-  const availability = doctor();
+  const availability = await doctor();
   const ompOk = availability.omp?.available === true;
   const codexOk = availability.codex?.available === true;
 
