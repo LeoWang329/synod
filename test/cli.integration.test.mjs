@@ -107,10 +107,18 @@ describe("cli main() integration", () => {
     assert.strictEqual(exitCode, 0);
   });
 
-  it("/open with bad --agent writes stderr", async () => {
+  it("/open with bad --agent writes stderr (now at open-time via checkAgentAvailable)", async () => {
     const { stderr, exitCode } = await runMain(["/open --agent gpt99", "/exit"]);
-    assert.ok(stderr.includes("--agent must be one of"));
+    assert.ok(stderr.includes('unknown agent "gpt99"'));
     assert.strictEqual(exitCode, 0);
+  });
+
+  it("--agent <unregistered> → exit 2 with available list (runtime, not parse)", async () => {
+    const { stderr, exitCode } = await runMain([], {
+      argv: ["node", "cli.mjs", "--agent", "bogus"],
+    });
+    assert.strictEqual(exitCode, 2);
+    assert.match(stderr, /--agent must be one of omp, codex \(got "bogus"\)/);
   });
 
   it("/relay with nonexistent target writes stderr", async () => {

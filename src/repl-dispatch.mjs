@@ -30,7 +30,6 @@
 // a specific session label.
 
 import { parseRelay } from "./relay.mjs";
-import { AGENTS } from "./session-manager.mjs";
 
 /**
  * Parse "/open --agent x --model y ..." into an options object.
@@ -52,9 +51,6 @@ export function parseOpenArgs(tokens) {
           return { error: `${tok} requires a value` };
         }
         if (tok === "--agent") {
-          if (!AGENTS.includes(v)) {
-            return { error: `--agent must be one of ${AGENTS.join(", ")} (got "${v}")` };
-          }
           opts.agent = v;
         } else if (tok === "--model") {
           opts.model = v;

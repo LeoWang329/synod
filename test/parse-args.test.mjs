@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { parseArgs, AGENTS, meshFromEnv } from "../src/cli.mjs";
+import { parseArgs, meshFromEnv } from "../src/cli.mjs";
 
 describe("parseArgs", () => {
   it("defaults: no args", () => {
@@ -19,10 +19,10 @@ describe("parseArgs", () => {
     assert.strictEqual(out._unknown, null);
   });
 
-  it("--agent invalid", () => {
+  it("--agent unknown value passes parse (rejection now at runtime, not parse)", () => {
     const out = parseArgs(["--agent", "invalid"]);
-    assert.ok(out._unknown);
-    assert.match(out._unknown, /--agent value must be one of omp, codex/);
+    assert.strictEqual(out._unknown, null);
+    assert.strictEqual(out.agent, "invalid");
   });
 
   it("--model foo", () => {
@@ -108,10 +108,10 @@ describe("parseArgs", () => {
     assert.match(out._unknown, /must contain ":"/);
   });
 
-  it("--task invalid:prompt", () => {
+  it("--task unknown agent passes parse (rejection now at runtime, not parse)", () => {
     const out = parseArgs(["--task", "invalid:prompt"]);
-    assert.ok(out._unknown);
-    assert.match(out._unknown, /--task agent must be one of omp, codex/);
+    assert.strictEqual(out._unknown, null);
+    assert.deepStrictEqual(out.tasks, [{ agent: "invalid", prompt: "prompt" }]);
   });
 
   it("--task omp: (empty prompt after trim)", () => {

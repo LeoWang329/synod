@@ -12,7 +12,8 @@ import readline from "node:readline";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { doctor, openBackend as realOpenBackend } from "./backend.mjs";
-import { createSessionManager, createLineBuffer, checkAgentAvailable, AGENTS } from "./session-manager.mjs";
+import { createSessionManager, createLineBuffer, checkAgentAvailable } from "./session-manager.mjs";
+import { backendNames } from "./backends/registry.mjs";
 import { createRelayRegistry } from "./relay.mjs";
 import { wireControl } from "./control-wire.mjs";
 import { createReplDispatch, parseOpenArgs } from "./repl-dispatch.mjs";
@@ -37,11 +38,7 @@ function parseArgs(argv) {
       case "--agent": {
         const v = argv[++i];
         if (!v || v.startsWith("--")) {
-          out._unknown = `${tok} requires a value (${AGENTS.join("|")})`;
-          return out;
-        }
-        if (!AGENTS.includes(v)) {
-          out._unknown = `--agent value must be one of ${AGENTS.join(", ")} (got "${v}")`;
+          out._unknown = `${tok} requires a value`;
           return out;
         }
         out.agent = v;
@@ -99,10 +96,6 @@ function parseArgs(argv) {
         }
         const agent = v.slice(0, colonIdx);
         const prompt = v.slice(colonIdx + 1);
-        if (!AGENTS.includes(agent)) {
-          out._unknown = `--task agent must be one of ${AGENTS.join(", ")} (got "${agent}")`;
-          return out;
-        }
         if (!prompt.trim()) {
           out._unknown = `--task prompt must not be empty`;
           return out;
@@ -311,6 +304,17 @@ async function main({
   }
 
   const report = doctor();
+  const names = backendNames();
+  if (!names.includes(args.agent)) {
+    stderr.write(`synod: --agent must be one of ${names.join(", ")} (got "${args.agent}")\n`);
+    return 2;
+  }
+  for (const t of args.tasks) {
+    if (!names.includes(t.agent)) {
+      stderr.write(`synod: --task agent must be one of ${names.join(", ")} (got "${t.agent}")\n`);
+      return 2;
+    }
+  }
   const cwd = path.resolve(process.cwd());
   // Precedence: explicit --mesh/--no-mesh (true/false) > SYNOD_MESH env > off.
   // `??` (not `||`) so an explicit --no-mesh (false) overrides the env instead
@@ -468,4 +472,4 @@ if (_isMain) {
     });
 }
 
-export { main, parseArgs, createLineBuffer, parseOpenArgs, AGENTS };
+export { main, parseArgs, createLineBuffer, parseOpenArgs };

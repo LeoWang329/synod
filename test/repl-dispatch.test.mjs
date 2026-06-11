@@ -9,7 +9,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { createReplDispatch, parseOpenArgs } from "../src/repl-dispatch.mjs";
-import { AGENTS } from "../src/session-manager.mjs";
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -145,10 +144,8 @@ describe("parseOpenArgs", () => {
     assert.deepStrictEqual(parseOpenArgs(["--agent"]), { error: "--agent requires a value" });
   });
 
-  it("--agent unknown returns error with allowed list", () => {
-    const r = parseOpenArgs(["--agent", "gpt5"]);
-    assert.ok(r.error.includes("--agent must be one of"));
-    assert.ok(r.error.includes("gpt5"));
+  it("--agent unknown is no longer rejected at parse (caught at open-time via sm.open → checkAgentAvailable)", () => {
+    assert.deepStrictEqual(parseOpenArgs(["--agent", "gpt5"]), { agent: "gpt5" });
   });
 
   it("--model without value returns error", () => {
@@ -409,12 +406,13 @@ describe("dispatch / commands", () => {
     assert.strictEqual(sm.calls.open.length, 0);
   });
 
-  it("/open with unknown agent via parseOpenArgs validation writes stderr", async () => {
+  it("/open with unknown agent now passes through to sm.open (rejection moved to open-time, not parse)", async () => {
     const { dispatch, sm, stderr } = setup();
     const r = await dispatch("/open --agent gpt99");
     assert.strictEqual(r.redraw, true);
-    assert.ok(stderr.buf.includes("--agent must be one of"));
-    assert.strictEqual(sm.calls.open.length, 0);
+    assert.strictEqual(sm.calls.open.length, 1);
+    assert.strictEqual(sm.calls.open[0].agent, "gpt99");
+    assert.strictEqual(stderr.buf, "");
   });
 
   it("/open when sm.open returns null still redraws (error handled by sm)", async () => {
