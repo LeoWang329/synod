@@ -74,7 +74,7 @@ if (process.platform === "win32") {
   console.log("win32: skipped");
   process.exit(0);
 }
-const report = doctor();
+const report = await doctor();
 if (!report.omp.available) {
   console.log("omp not available: skipped");
   process.exit(0);
