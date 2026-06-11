@@ -39,6 +39,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { trackSession, untrackSession } from "./shutdown.mjs";
 import { writePidRecord, removePidRecord } from "./pid-registry.mjs";
+import { registerBackend, getBackend, backendNames } from "./backends/registry.mjs";
 
 // ── Constants ────────────────────────────────────────────────────────
 // 0.5.1:13–36
@@ -91,12 +92,6 @@ function nowIso() {
 // 0.5.1:214
 function makeId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-// 0.5.1:218
-function assertAgent(agent) {
-  if (!AGENTS[agent])
-    throw new Error(`Unsupported agent "${agent}". Use omp or codex.`);
 }
 
 // 0.5.1:222
@@ -1526,49 +1521,79 @@ export async function openBackend({
   model,
   effort,
   mesh = false,
+  systemPrompt,
   spawnImpl,
 }) {
   ensureDirs();
-  assertAgent(agent);
-  const effectiveSpawn = spawnImpl || _defaultSpawn;
-  const options = { cwd, write, model, effort, mesh, spawn: effectiveSpawn };
-  const session =
-    agent === "omp"
-      ? new OmpSession(options)
-      : new CodexSession(options);
-  try {
-    await session.start();
-  } catch (err) {
-    try { await session.close(); } catch {}
-    throw err;
+  const adapter = getBackend(agent);
+  if (!adapter) {
+    throw new Error(
+      `Unsupported agent "${agent}". Registered: ${backendNames().join(", ") || "(none)"}.`,
+    );
   }
+  const effectiveSpawn = spawnImpl || _defaultSpawn;
+  const session = await adapter.open({
+    cwd, write, model, effort, mesh, systemPrompt, spawn: effectiveSpawn,
+  });
   trackSession(session);
   writePidRecord({ sessionId: session.id, pid: session.proc?.pid, bin: agent });
+  // close 包装:无论 adapter 实现是否记得注销,出生点保证 untrack + 清 PID
+  // 记录(内置 OmpSession/CodexSession 的类内 untrack 与此叠加,幂等无害)。
+  const origClose = session.close.bind(session);
+  session.close = (...a) => {
+    untrackSession(session);
+    removePidRecord(session.id);
+    return origClose(...a);
+  };
   return session;
 }
 
+registerBackend({
+  name: "omp",
+  doctor: () => probeCliVersion(agentBin("omp")),
+  async open(options) {
+    const session = new OmpSession(options);
+    try { await session.start(); } catch (err) { try { session.close(); } catch {} throw err; }
+    return session;
+  },
+});
+registerBackend({
+  name: "codex",
+  doctor: () => probeCliVersion(agentBin("codex")),
+  async open(options) {
+    const session = new CodexSession(options);
+    try { await session.start(); } catch (err) { try { session.close(); } catch {} throw err; }
+    return session;
+  },
+});
+
 export { terminateProcessTree, scheduleForceKill };
+export { spawnPlan, assertCwd, makeId, nowIso, stripAnsi, clampText, withTimeout };
+
+/** 探测一个 CLI 的可用性与版本(spawnSync <bin> --version)。 */
+export function probeCliVersion(bin, versionArgs = ["--version"]) {
+  const plan = spawnPlan(bin, versionArgs);
+  const probe = spawnSync(plan.command, plan.args, {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  return {
+    available: !probe.error && probe.status === 0,
+    version: probe.status === 0
+      ? stripAnsi(probe.stdout || probe.stderr).trim()
+      : null,
+  };
+}
 
 /**
- * Check availability of omp and codex on this machine.
+ * Aggregate availability of every registered backend adapter.
  *
- * @returns {{ omp: { available: boolean, version: string|null }, codex: { available: boolean, version: string|null } }}
+ * @returns {Record<string, { available: boolean, version: string|null }>}
  */
 export function doctor() {
   const result = {};
-  for (const [agent, config] of Object.entries(AGENTS)) {
-    const bin = agentBin(agent);
-    const plan = spawnPlan(bin, ["--version"]);
-    const probe = spawnSync(plan.command, plan.args, {
-      encoding: "utf8",
-      windowsHide: true,
-    });
-    result[agent] = {
-      available: probe.status === 0,
-      version: probe.status === 0
-        ? stripAnsi(probe.stdout || probe.stderr).trim()
-        : null,
-    };
+  for (const name of backendNames()) {
+    result[name] = getBackend(name).doctor();
   }
   return result;
 }
