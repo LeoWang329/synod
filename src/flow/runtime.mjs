@@ -109,10 +109,10 @@ function defaultIo() {
  */
 export function createRuntime({
   fs, clock, openBackend, io, progress, config, signal,
-  workflowsRoot, maxDepth, maxActiveSubRuns,
+  workflowsRoot, maxDepth, maxActiveSubRuns, runsRoot,
 } = {}) {
   const resolvedIo = io ?? defaultIo();
-  const logger = createLogger({ fs, clock });
+  const logger = createLogger({ fs, clock, runsRoot });
   const resolvedOpenBackend = openBackend ?? realOpenBackend;
 
   /** @type {Map<string, { reusedSessions: Map<string, object> }>} */

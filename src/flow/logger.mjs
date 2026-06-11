@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 
 /**
  * Characters threshold above which `output` (and `input`) are diverted to
@@ -19,12 +19,22 @@ const LOG_PATH = "run.log.jsonl";
  * separation and session lifecycle events.
  *
  * Injected dependencies:
- *  - fs:  { writeFile(path, content), appendFile(path, content) }
- *  - clock: () => number   (milliseconds-since-epoch timestamp)
+ *  - fs:       { writeFile(path, content), appendFile(path, content)[, mkdir] }
+ *  - clock:    () => number   (milliseconds-since-epoch timestamp)
+ *  - runsRoot: optional absolute path; when given, every run's log/artifacts
+ *              land in runsRoot/<runId>/run.log.jsonl (per-run directory).
+ *              When omitted, logs go to the relative LOG_PATH (backward-compat).
  *
  * Every `logStep` call writes two JSONL lines:
- *  1. step:started
+ *  1. step:started  — carries `key = <seq>:<node>:<inputHash8>` (1C-b resume key)
  *  2. step:succeeded  (or step:failed when `error` is present)
+ *              — carries `key`, `durationMs` (tEnd − tStart)
+ *
+ * `key` format:  <seq>:<node>:<inputHash8>
+ *   seq        = per-run call ordinal (starts at 0, increments per logStep)
+ *   node       = node name from logStep opts
+ *   inputHash8 = sha1(input).slice(0,8) — 1C-b resume uses this for deterministic
+ *                replay matching; DO NOT change this format without updating 1C-b.
  *
  * Large `output` / `input` strings (length > OUTPUT_INLINE_THRESHOLD) are
  * stored as artifacts; the JSONL line carries an `outputRef` / `inputRef`
@@ -32,9 +42,36 @@ const LOG_PATH = "run.log.jsonl";
  *
  * `logSession` writes a single JSONL line for session open/close events.
  */
-export function createLogger({ fs, clock }) {
-  async function writeJSONL(obj) {
-    await fs.appendFile(LOG_PATH, JSON.stringify(obj) + "\n");
+export function createLogger({ fs, clock, runsRoot }) {
+  const _seqByRun = new Map();   // runId → 下一个原语调用序号(确定性 key 的 seq 段)
+
+  // per-run 路径:runsRoot 给定时 → runsRoot/<runId>/...;否则保留相对路径(向后兼容)。
+  function pathsFor(runId) {
+    if (!runsRoot) return { dir: null, logPath: LOG_PATH, artifactDir: ARTIFACT_DIR };
+    const dir = `${runsRoot}/${runId}`;
+    return { dir, logPath: `${dir}/${LOG_PATH}`, artifactDir: `${dir}/${ARTIFACT_DIR}` };
+  }
+  async function ensureRunDir(p) {
+    if (p.dir && fs.mkdir) {
+      await fs.mkdir(p.dir, { recursive: true }).catch(() => {});
+      await fs.mkdir(p.artifactDir, { recursive: true }).catch(() => {});
+    }
+  }
+  // 1C-b resume 对账依据:<seq>:<node>:<inputHash8>。seq 在 step:started 时分配
+  // (调用发起序),node 与输入 hash 让 resume 能前缀匹配回放 logged 输出。
+  function shortHash(s) {
+    return createHash("sha1").update(typeof s === "string" ? s : JSON.stringify(s ?? "")).digest("hex").slice(0, 8);
+  }
+  function nextSeq(runId) {
+    const n = _seqByRun.get(runId) ?? 0;
+    _seqByRun.set(runId, n + 1);
+    return n;
+  }
+
+  async function writeJSONL(runId, obj) {
+    const p = pathsFor(runId);
+    await ensureRunDir(p);
+    await fs.appendFile(p.logPath, JSON.stringify(obj) + "\n");
   }
 
   /**
@@ -43,6 +80,8 @@ export function createLogger({ fs, clock }) {
 const RESERVED_META_KEYS = new Set([
   "event", "runId", "stepId", "node", "type", "attempt",
   "ts", "input", "inputRef", "output", "outputRef", "error",
+  // key/durationMs 是 step 遥测 + 1C-b resume 对账依据,meta 不得覆盖。
+  "key", "durationMs", "parentRunId",
 ]);
 
 /**
@@ -98,13 +137,14 @@ function validateMeta(meta) {
    * Write an `output`-like value (output or input) to artifact if large,
    * returning { ref, str }.
    */
-  async function disposeLargeString(stepId, prefix, value) {
-    let ref;
-    let str;
+  async function disposeLargeString(runId, stepId, prefix, value) {
+    let ref, str;
     if (value !== undefined && value !== null) {
       str = typeof value === "string" ? value : JSON.stringify(value);
       if (str.length > OUTPUT_INLINE_THRESHOLD) {
-        ref = `${ARTIFACT_DIR}/${stepId}.${prefix}.txt`;
+        const p = pathsFor(runId);
+        await ensureRunDir(p);
+        ref = `${p.artifactDir}/${stepId}.${prefix}.txt`;
         await fs.writeFile(ref, str);
       }
     }
@@ -150,7 +190,9 @@ function validateMeta(meta) {
     }
 
     const stepId = randomUUID();
-    const ts = clock();
+    const seq = nextSeq(ctx.runId);
+    const key = `${seq}:${node}:${shortHash(input)}`;
+    const tStart = clock();
 
     // ── step:started ──────────────────────────────────────────────
     const startedEntry = {
@@ -160,24 +202,28 @@ function validateMeta(meta) {
       node,
       type,
       attempt,
-      ts,
+      ts: tStart,
+      key,
     };
     if (ctx.parentRunId) startedEntry.parentRunId = ctx.parentRunId;
-    await writeJSONL(startedEntry);
+    await writeJSONL(ctx.runId, startedEntry);
 
     // ── Dispose large input / output to artifacts ─────────────────
     const inputDisposition = await disposeLargeString(
+      ctx.runId,
       stepId,
       "input",
       input,
     );
     const outputDisposition = await disposeLargeString(
+      ctx.runId,
       stepId,
       "output",
       output,
     );
 
     // ── step:succeeded | step:failed ──────────────────────────────
+    const tEnd = clock();
     const event = error ? "step:failed" : "step:succeeded";
     const entry = {
       event,
@@ -186,7 +232,9 @@ function validateMeta(meta) {
       node,
       type,
       attempt,
-      ts,
+      ts: tEnd,
+      durationMs: tEnd - tStart,
+      key,
     };
     if (ctx.parentRunId) entry.parentRunId = ctx.parentRunId;
 
@@ -213,7 +261,7 @@ function validateMeta(meta) {
       Object.assign(entry, meta);
     }
 
-    await writeJSONL(entry);
+    await writeJSONL(ctx.runId, entry);
   }
 
   /**
@@ -264,7 +312,7 @@ function validateMeta(meta) {
       ts: clock(),
     };
     if (ctx.parentRunId) entry.parentRunId = ctx.parentRunId;
-    await writeJSONL(entry);
+    await writeJSONL(ctx.runId, entry);
   }
 
   return { logStep, logSession, writeJSONL };

@@ -17,6 +17,7 @@
  */
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
+import os from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRuntime } from "./flow/runtime.mjs";
@@ -232,7 +233,8 @@ export async function main({
   io: injectedIo,
   signal: externalSignal,
   // Inject real fs by default; tests pass a noop/in-memory sink
-  fs: realFs = { writeFile, appendFile },
+  fs: realFs = { writeFile, appendFile, mkdir },
+  runsRoot: runsRootOpt,
 } = {}) {
   const args = parseFlowArgs(argv);
 
@@ -275,8 +277,8 @@ export async function main({
   const progressEnabled = args.progress || process.env.SYNOD_PROGRESS === "1";
   const progressSink = progressEnabled ? createDefaultProgressSink(stdout) : undefined;
 
-  // Ensure artifacts directory exists for logger
-  await mkdir("artifacts", { recursive: true }).catch(() => {});
+  // per-run 目录由 logger 的 ensureRunDir 负责;不再在 cwd 建 artifacts。
+  const runsRoot = runsRootOpt ?? resolve(os.homedir(), ".synod", "runs");
 
   // Load config (profiles + custom backends) before building the runtime.
   // When a caller (e.g. cli.mjs REPL /flow) already loaded + registered the
@@ -306,6 +308,7 @@ export async function main({
       config,
       io: injectedIo,             // REPL injects the shared router io; standalone → defaultIo()
       signal: externalSignal,     // CLI Ctrl-C link; standalone → undefined
+      runsRoot,
     });
   } catch (err) {
     stderr.write(`Error: failed to create runtime: ${err.message}\n`);
