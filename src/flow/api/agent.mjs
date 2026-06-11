@@ -35,6 +35,7 @@ export function createAgent({
   config,
   getSignal,
   getReplay,
+  acquireWorkspace,
 }) {
   /** Best-effort await — never throws. */
   const bg = (p) => p.catch(() => {});
@@ -71,9 +72,9 @@ export function createAgent({
     return task;
   }
 
-  function sessionKeyOf({ agent: agentName, model, effort, write, mesh, systemPrompt }) {
+  function sessionKeyOf({ agent: agentName, model, effort, write, mesh, systemPrompt, workspace }) {
     // 结构化 key:避免 model/systemPrompt 内含分隔符导致不同字段元组碰撞同一 key。
-    return JSON.stringify([agentName, model ?? "", effort ?? "", !!write, !!mesh, systemPrompt ?? ""]);
+    return JSON.stringify([agentName, model ?? "", effort ?? "", !!write, !!mesh, systemPrompt ?? "", workspace ?? ""]);
   }
 
   function validateAgentArgs(ctx, { agent: agentName, model, prompt }) {
@@ -98,7 +99,7 @@ export function createAgent({
 
   async function agentOnce(
     ctx,
-    { agent: agentName, model, effort, write, mesh, systemPrompt, prompt, reuse, signal: optsSignal },
+    { agent: agentName, model, effort, write, mesh, systemPrompt, prompt, reuse, signal: optsSignal, workspace },
   ) {
     // ── resume 重放(§4.12-1):命中即回放 logged 输出,绝不 openBackend ──
     const rep = getReplay?.(ctx.runId, { node: agentName, input: prompt });
@@ -109,7 +110,10 @@ export function createAgent({
     const runState = getRunState(ctx.runId);
     // opts.signal 显式优先于 run 级 signal(CLI Ctrl-C / abortRun)。
     const signal = optsSignal ?? getSignal?.(ctx.runId);
-    const sessionKey = sessionKeyOf({ agent: agentName, model, effort, write, mesh, systemPrompt });
+    const sessionKey = sessionKeyOf({ agent: agentName, model, effort, write, mesh, systemPrompt, workspace });
+
+    // ── write+workspace → 隔离 worktree cwd(§4.11);只读/无 workspace 用主 cwd ──
+    const agentCwd = (write && workspace) ? acquireWorkspace(ctx, workspace).path : ctx.cwd;
 
     let session;
     let reused = false;
@@ -135,7 +139,7 @@ export function createAgent({
           write,
           mesh,
           systemPrompt,
-          cwd: ctx.cwd,
+          cwd: agentCwd,
         });
       } catch (openErr) {
         await bg(logger.logStep(ctx, {

@@ -172,6 +172,23 @@ export function createRuntime({
     if (rs) rs.reusedSessions.delete(key);
   }
 
+  /** write+workspace 时取隔离 worktree(供 agent);非 git 由 RunWorkspace 抛错。 */
+  function acquireWorkspace(ctx, name) {
+    if (!runWorkspace) {
+      throw new Error(
+        `agent: write+workspace requires a RunWorkspace (no git repo configured for run ${ctx.runId})`,
+      );
+    }
+    return runWorkspace.acquire({ runId: ctx.runId, name });
+  }
+
+  /** run 收尾合并 worktree;无 runWorkspace → 空结果。 */
+  async function finalizeWorkspaces(ctx) {
+    if (!runWorkspace) return { merged: [], conflicts: [] };
+    try { return runWorkspace.finalize({ runId: ctx.runId }); }
+    catch (err) { return { merged: [], conflicts: [], error: err.message }; }
+  }
+
   const agent = createAgent({
     openBackend: resolvedOpenBackend,
     logger,
@@ -181,6 +198,7 @@ export function createRuntime({
     config,
     getSignal: signalFor,
     getReplay: replayStep,
+    acquireWorkspace,
   });
 
   const bash = createBash({ logger, getSignal: signalFor, getReplay: replayStep });
@@ -264,6 +282,8 @@ export function createRuntime({
     reviseWithHuman,
     /** disposeRun(ctx) — close reused sessions for a run. */
     disposeRun,
+    /** finalizeWorkspaces(ctx) — merge worktrees at run end; no-op when no runWorkspace. */
+    finalizeWorkspaces,
     /** abortRun(ctx) — abort a run's AbortController (cooperative cancel). */
     abortRun,
     /** Escape hatch for tests: return the per-run state map entry. */

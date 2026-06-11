@@ -26,6 +26,7 @@ import { runFlow } from "./flow/runner.mjs";
 import { writeCheckpoint, isAwaitingHuman } from "./flow/checkpoint.mjs";
 import { openBackend } from "./backend.mjs";
 import { installShutdownHandlers, closeAllLiveSessionsSync } from "./shutdown.mjs";
+import { createRunWorkspace, scanResidualWorktrees } from "./run-workspace.mjs";
 
 // ── CLI parsing ──────────────────────────────────────────────────────────
 
@@ -343,6 +344,9 @@ export async function main({
   // SYNOD_HOME 对齐:cli.mjs --runs 也用 SYNOD_HOME,两者必须一致(A3)。
   const runsRoot = runsRootOpt ?? resolve(process.env.SYNOD_HOME || os.homedir(), ".synod", "runs");
 
+  const worktreesRoot = resolve(os.homedir(), ".synod", "worktrees");
+  const runWorkspace = createRunWorkspace({ cwd, worktreesRoot, runsRoot });
+
   // Build runtime with real dependencies
   let runtime;
   try {
@@ -358,6 +362,7 @@ export async function main({
       runsRoot,
       headless,
       replay: resume ? { runId: resume.runId, steps: resume.steps } : undefined,
+      runWorkspace,
     });
   } catch (err) {
     stderr.write(`Error: failed to create runtime: ${err.message}\n`);
@@ -381,23 +386,47 @@ export async function main({
   await writeLatestPointer(runsRoot, ctx.runId).catch(() => {});
   // Write initial `running` checkpoint so the run is discoverable even after a hard kill
   try { writeCheckpoint(runsRoot, ctx.runId, { flowName: args.name, input: flowInput, cwd, status: "running" }); } catch { /* best-effort */ }
+  let result, runErr;
   try {
-    const result = await runFlow(runtime, flow, ctx, flowInput);
-    if (result !== undefined) {
-      stdout.write(JSON.stringify(result, null, 2) + "\n");
-    }
-    try { writeCheckpoint(runsRoot, ctx.runId, { status: "done" }); } catch { /* best-effort */ }
-    return 0;
+    result = await runFlow(runtime, flow, ctx, flowInput);
   } catch (err) {
-    if (isAwaitingHuman(err)) {
-      try { writeCheckpoint(runsRoot, ctx.runId, { status: "awaiting_human" }); } catch { /* best-effort */ }
-      stderr.write(`Error: flow "${args.name}" is awaiting human input\n`);
-      return 5;
+    runErr = err;
+  }
+
+  // ── RunWorkspace 收尾:合回起始分支,冲突留人并打印清单 ──
+  const wsr = await runtime.finalizeWorkspaces(ctx);
+  if (wsr.merged?.length) {
+    stdout.write(`\n[workspace] merged: ${wsr.merged.join(", ")}\n`);
+  }
+  if (wsr.conflicts?.length) {
+    stderr.write(`\n[workspace] ${wsr.conflicts.length} conflict(s) left for you:\n`);
+    for (const c of wsr.conflicts) {
+      stderr.write(`  - branch ${c.branch}\n    worktree: ${c.path}\n    files: ${c.files.join(", ") || "(see git status)"}\n`);
     }
-    try { writeCheckpoint(runsRoot, ctx.runId, { status: "failed", failedAt: err.message }); } catch { /* best-effort */ }
-    stderr.write(`Error: flow "${args.name}" failed: ${err.message}\n`);
+  }
+  const wtRecords = (runWorkspace.list?.(ctx.runId) ?? []).map((w) => ({ name: w.name, branch: w.branch, path: w.path }));
+
+  if (runErr) {
+    if (isAwaitingHuman(runErr)) {
+      try { writeCheckpoint(runsRoot, ctx.runId, { worktrees: wtRecords }); } catch {}
+      stderr.write(`Awaiting human at run ${ctx.runId}. Resume: synod resume ${ctx.runId}\n`);
+      return runErr.exitCode;
+    }
+    try {
+      writeCheckpoint(runsRoot, ctx.runId, {
+        status: "failed", error: runErr.message,
+        stoppedAt: { node: runErr.node ?? null, type: null, inputHash: null },
+        worktrees: wtRecords,
+      });
+    } catch {}
+    stderr.write(`Error: flow "${args.name}" failed: ${runErr.message}\n`);
     return 1;
   }
+  try { writeCheckpoint(runsRoot, ctx.runId, { status: "done", worktrees: wtRecords }); } catch {}
+  if (result !== undefined) {
+    stdout.write(JSON.stringify(result, null, 2) + "\n");
+  }
+  return 0;
 }
 
 // ── Run guard ────────────────────────────────────────────────────────────
