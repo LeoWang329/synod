@@ -448,11 +448,12 @@ const _isMain = isEntrypoint(import.meta.url);
 
 if (_isMain) {
   installShutdownHandlers({ interactiveSigint: false });
-  // headless 判定 = !stdin.isTTY || --headless(§4.13)。isTTY 只在此 standalone 入口
-  // 读取——经 injectedHeadless 注入 main();管道/重定向(isTTY 为 undefined)→ headless,
-  // 故 `echo ... | node src/flow.mjs <flow>` 遇 approve 写断点退出 5,不再永久等 stdin。
-  // 注入式调用(测试/cli)不走此处,既有行为零回归。TTY 下传 undefined → 回落 --headless。
-  main({ headless: process.stdin.isTTY ? undefined : true })
+  // headless 由显式 `--headless` 触发(§4.13)。**有意不**用 `!stdin.isTTY` 自动判定:
+  // 管道 stdin 既可能是"无输入的 CI"(该 headless),也可能是"喂脚本答复的自动化"
+  // (该交互,如 acceptance-flow FA4 `child.stdin.write` 跑 revise-demo)——二者启动时
+  // 都是非 TTY 管道,无法区分,自动判定会把脚本自动化误断成 headless 而断在首个 approve。
+  // 故 CI/cron 需显式 `--headless`(approve 写断点 + 退出码 5),不破坏脚本喂 stdin 的既有 e2e。
+  main()
     .then((code) => {
       // P2-43:正常退出也兜底——fire-and-forget 的非 reuse agent() 子进程
       // 不会被 process.exit 砍成孤儿(幂等,常态 no-op)。
