@@ -47,9 +47,12 @@
  *   - `{ accepted: false, feedback: "<…>" }`
  */
 
+import { writeCheckpoint, awaitingHumanError } from "../checkpoint.mjs";
+import { shortHash } from "../logger.mjs";
+
 const ACCEPT_WORDS = new Set(["accept", "y", "yes", "ok", "approve"]);
 
-export function createApprove({ io, logger, getSignal, getReplay }) {
+export function createApprove({ io, logger, getSignal, getReplay, headless = false, events, runsRoot }) {
   /**
    * approve(ctx, opts) — present content to a human, wait for decision.
    *
@@ -76,6 +79,33 @@ export function createApprove({ io, logger, getSignal, getReplay }) {
       if (rep.entry?.aborted) return { aborted: true };
       if (rep.entry?.accepted) return { accepted: true };
       return { accepted: false, feedback: rep.output ?? "" };
+    }
+
+    // ── headless 人在环断点(§4.13):不等 stdin,存断点退出等人 ──
+    if (headless) {
+      const body = content != null ? String(content) : "";
+      // 完整打印待审内容到 stdout(CI 日志可见)。
+      if (body) io.stdout.write(body + "\n");
+      io.stdout.write("[synod] awaiting human approval — run is paused.\n");
+      // 写 checkpoint(awaiting-approval + 待审内容 + 停点)。
+      if (runsRoot) {
+        try {
+          writeCheckpoint(runsRoot, ctx.runId, {
+            status: "awaiting-approval",
+            stoppedAt: { node: "approve", type: "approve", inputHash: shortHash(body) },
+            pending: { content: body },
+          });
+        } catch { /* 写失败不阻断退出 */ }
+      }
+      // 记一条 approve 中断(best-effort,供尸检)。
+      await logger.logStep(ctx, {
+        node: "approve", type: "approve", attempt: 1, input: body, output: "(awaiting-human)",
+        meta: { accepted: false, aborted: false, awaiting: true },
+      }).catch(() => {});
+      // onApprovalNeeded 事件挂点(1D 接命令钩子 + 终端铃;本计划只 emit)。
+      try { events?.emit("approvalNeeded", { runId: ctx.runId, node: "approve", content: body }); }
+      catch { /* 事件订阅者异常不影响主流程 */ }
+      throw awaitingHumanError({ runId: ctx.runId, node: "approve" });
     }
 
     const signal = opts.signal ?? getSignal?.(ctx.runId);   // §4.7-3: run-level fallback
