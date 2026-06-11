@@ -68,8 +68,8 @@ export function createAgent({
     return task;
   }
 
-  function sessionKeyOf({ agent: agentName, model, effort, write }) {
-    return `${agentName}:${model ?? ""}:${effort ?? ""}:${write ? "w" : "r"}`;
+  function sessionKeyOf({ agent: agentName, model, effort, write, mesh, systemPrompt }) {
+    return `${agentName}:${model ?? ""}:${effort ?? ""}:${write ? "w" : "r"}:${mesh ? "m" : ""}:${systemPrompt ?? ""}`;
   }
 
   function validateAgentArgs(ctx, { agent: agentName, model, prompt }) {
@@ -99,7 +99,7 @@ export function createAgent({
     const sink = progress;
 
     const runState = getRunState(ctx.runId);
-    const sessionKey = sessionKeyOf({ agent: agentName, model, effort, write });
+    const sessionKey = sessionKeyOf({ agent: agentName, model, effort, write, mesh, systemPrompt });
 
     let session;
     let reused = false;

@@ -60,6 +60,15 @@ test("reuse 的 sessionKey 区分 write/effort(不同权限不得共用会话)",
   await runtime.disposeRun(ctx);
 });
 
+test("reuse 的 sessionKey 区分 systemPrompt/mesh(不同 role 不复用会话)", async () => {
+  const { opened, runtime } = runtimeWithSpy(undefined);
+  const ctx = runtime.createCtx(undefined, { cwd: "/tmp" });
+  await runtime.agent(ctx, { agent: "omp", systemPrompt: "你是 A", prompt: "a", reuse: true });
+  await runtime.agent(ctx, { agent: "omp", systemPrompt: "你是 B", prompt: "b", reuse: true });
+  assert.equal(opened.length, 2, "不同 systemPrompt 必须各开会话");
+  await runtime.disposeRun(ctx);
+});
+
 test("agentLoop 同样支持 profile + 发 progress 事件", async () => {
   const events = [];
   const config = { agents: { judge: { backend: "omp", model: "m9" } } };

@@ -377,7 +377,7 @@ async function main({
   const flowsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "workflows");
   const _pendingFlows = new Set();
   const runFlow = (flowArgv) => {
-    const p = flowMain({ argv: flowArgv, stdout, stderr, openBackend, workflowsRoot: flowsRoot, cwd });
+    const p = flowMain({ argv: flowArgv, stdout, stderr, openBackend, workflowsRoot: flowsRoot, cwd, config });
     _pendingFlows.add(p);
     p.finally(() => _pendingFlows.delete(p)).catch(() => {});
     return p;

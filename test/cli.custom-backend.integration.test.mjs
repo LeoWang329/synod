@@ -91,3 +91,34 @@ export async function run(ctx, input) {
   assert.match(stdout.text(), /"out": "echo: ping"/);
   _unregisterForTests("echo");                          // 收尾
 });
+
+test("flowMain 传入已注册 config 时不重复注册(REPL /flow 场景不再 already-registered)", async () => {
+  _unregisterForTests("echo");
+  const { home, proj } = makeEnv();              // makeEnv 写 config:backend "echo" + agent "echoer"
+  process.chdir(proj);
+  mkdirSync(join(proj, "workflows"));
+  // 让 flow 文件的 import "synod/flow" 在 tmp 工程里可解析(同上一用例)。
+  mkdirSync(join(proj, "node_modules"), { recursive: true });
+  symlinkSync(PKG_ROOT, join(proj, "node_modules", "synod"), "dir");
+  writeFileSync(join(proj, "workflows", "echo-flow.mjs"), `
+import { agent } from "synod/flow";
+export const meta = { description: "echo via profile" };
+export async function run(ctx, input) {
+  const out = await agent(ctx, { profile: "echoer", prompt: String(input ?? "ping") });
+  return { out: out.trim() };
+}
+`);
+  const { loadConfig, registerConfigBackends } = await import("../src/config.mjs");
+  const config = await loadConfig({ cwd: proj, home });
+  await registerConfigBackends(config);          // 模拟 cli main 已注册
+  const { main: flowMain } = await import("../src/flow.mjs");
+  const stdout = collector(); const stderr = collector();
+  const code = await flowMain({
+    argv: ["echo-flow", "ping"], stdout, stderr,
+    workflowsRoot: join(proj, "workflows"), cwd: proj,
+    config,                                       // 传入已加载+已注册的 config → flow 跳过重复注册
+  });
+  assert.equal(code, 0, stderr.text());           // 不因 "already registered" 失败
+  assert.match(stdout.text(), /"out": "echo: ping"/);
+  _unregisterForTests("echo");
+});

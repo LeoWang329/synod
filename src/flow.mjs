@@ -201,6 +201,9 @@ function parseInput(raw) {
  * @param {Function} [opts.openBackend]     — backend factory (default: real openBackend)
  * @param {string} [opts.workflowsRoot]     — default workflows dir (default: ./workflows)
  * @param {string} [opts.cwd]               — working directory (default: process.cwd())
+ * @param {object} [opts.config]            — pre-loaded+registered config; when given,
+ *                                            skip loadConfig/registerConfigBackends
+ *                                            (caller already registered, e.g. REPL /flow)
  * @returns {Promise<number>} exit code (0, 1, or 2)
  */
 export async function main({
@@ -210,6 +213,7 @@ export async function main({
   openBackend: ob = openBackend,
   workflowsRoot: defaultRoot = resolve(process.cwd(), "workflows"),
   cwd = process.cwd(),
+  config: injectedConfig,
   // Inject real fs by default; tests pass a noop/in-memory sink
   fs: realFs = { writeFile, appendFile },
 } = {}) {
@@ -258,14 +262,19 @@ export async function main({
   await mkdir("artifacts", { recursive: true }).catch(() => {});
 
   // Load config (profiles + custom backends) before building the runtime.
-  let config;
-  try {
-    const { loadConfig, registerConfigBackends } = await import("./config.mjs");
-    config = await loadConfig({ cwd, home: process.env.SYNOD_HOME || undefined });
-    await registerConfigBackends(config);
-  } catch (err) {
-    stderr.write(`Error: ${err.message}\n`);
-    return 1;
+  // When a caller (e.g. cli.mjs REPL /flow) already loaded + registered the
+  // config in this process, it injects `config` so we must NOT register again
+  // (registerConfigBackends throws on an already-registered backend name).
+  let config = injectedConfig;
+  if (!config) {
+    try {
+      const { loadConfig, registerConfigBackends } = await import("./config.mjs");
+      config = await loadConfig({ cwd, home: process.env.SYNOD_HOME || undefined });
+      await registerConfigBackends(config);
+    } catch (err) {
+      stderr.write(`Error: ${err.message}\n`);
+      return 1;
+    }
   }
 
   // Build runtime with real dependencies
