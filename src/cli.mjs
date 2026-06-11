@@ -22,6 +22,7 @@ import { main as flowMain } from "./flow.mjs";
 import { prepareResume } from "./flow/replay.mjs";
 import { createInputRouter } from "./input-router.mjs";
 import { installShutdownHandlers, closeAllLiveSessionsSync, gracefulShutdown } from "./shutdown.mjs";
+import { scanResidualWorktrees } from "./run-workspace.mjs";
 
 // ── CLI parsing ──────────────────────────────────────────────────────
 function parseArgs(argv) {
@@ -179,6 +180,22 @@ function printHelp(stdout = process.stdout) {
   );
 }
 
+
+/**
+ * 残留 synod worktree 启动提示(§4.11 崩溃残留治理)。纯函数,便于单测。
+ * 只读建议——绝不替用户删除可能含未保存工作的 worktree。
+ */
+export function residualWorktreeNotice(residual) {
+  if (!residual || residual.length === 0) return "";
+  const lines = [
+    `synod: ${residual.length} residual synod worktree(s) from a previous run:`,
+  ];
+  for (const w of residual) {
+    lines.push(`  - ${w.path}  (branch ${w.branch})`);
+  }
+  lines.push(`  inspect, then clean with: git worktree remove <path> && git branch -D <branch>`);
+  return lines.join("\n") + "\n";
+}
 
 // ── Non-interactive task runner ──────────────────────────────────────
 async function runTasks(tasks, report, baseOpts, { openBackend, stdout = process.stdout, stderr = process.stderr } = {}) {
@@ -589,6 +606,13 @@ async function main({
       process.exit(1);
     }
   });
+
+  // ── 启动顺扫残留 synod worktree(上次崩溃遗留),只提示不替删。────────────
+  try {
+    const residual = scanResidualWorktrees(cwd);
+    const notice = residualWorktreeNotice(residual);
+    if (notice) stderr.write(notice);
+  } catch { /* 非 git 仓库 / git 缺失 → 静默跳过 */ }
 
   // ── Open default session ───────────────────────────────────────────
   const defaultLabel = await sm.open({ agent: args.agent, announce: false });
