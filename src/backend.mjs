@@ -410,7 +410,13 @@ class OmpSession extends EventEmitter {
     this.write = Boolean(options.write);
     this.mesh = Boolean(options.mesh);
     this.systemPrompt = options.systemPrompt || null;
-    this.model = sanitizeAgentArg(options.model || null, "model");
+    // 默认模型可经 SYNOD_OMP_MODEL 覆盖(运维逃生口:omp 默认 minimax 余额不足时
+    // 整库切 deepseek 等价模型,无需改每个调用点)。显式 options.model 仍最优先;
+    // codex 不受影响。未设环境变量则维持 omp 自身默认(null → 不传 --model)。
+    this.model = sanitizeAgentArg(
+      options.model || process.env.SYNOD_OMP_MODEL || null,
+      "model",
+    );
     this.effort = sanitizeAgentArg(options.effort || null, "effort");
     this.createdAt = nowIso();
     this.updatedAt = this.createdAt;

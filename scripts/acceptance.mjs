@@ -1058,6 +1058,12 @@ async function main() {
     process.exit(0);
   }
 
+  // omp 默认模型(minimax)余额不足时整体切 deepseek(用户运维指令)。OmpSession 读
+  // SYNOD_OMP_MODEL 作默认;runCli spawn 子进程继承 process.env,故在此统一注入。
+  // codex 不受影响(CodexSession 不读此变量)。已设则尊重之。
+  process.env.SYNOD_OMP_MODEL = process.env.SYNOD_OMP_MODEL || "deepseek/deepseek-v4-pro";
+  console.log(`omp model: ${process.env.SYNOD_OMP_MODEL}`);
+
   await test_A1(ompOk);
   await test_A2(ompOk, codexOk);
   await test_A3(ompOk);
