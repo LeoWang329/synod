@@ -131,3 +131,16 @@ describe("parseFlowArgs", () => {
     assert.strictEqual(r._error, null);
   });
 });
+
+it("P2-45 `--` 后的 token 一律按位置参数,input 为 --list 不被吞成 flag", () => {
+  const r = parseFlowArgs(["--progress", "--", "myflow", "--list"]);
+  assert.equal(r.progress, true);
+  assert.equal(r.name, "myflow");
+  assert.equal(r.input, "--list");
+  assert.equal(r.list, false, "`--` 之后的 --list 是 input,不是 --list flag");
+  assert.equal(r._error, null);
+});
+it("P2-45 `--` 后超过两个位置参数报错", () => {
+  const r = parseFlowArgs(["--", "a", "b", "c"]);
+  assert.match(r._error, /unexpected argument: c/);
+});

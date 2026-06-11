@@ -334,7 +334,7 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
       const m = afterCmd.match(/^(\S+)\s*([\s\S]*)$/);
       const name = m[1];
       const input = m[2];
-      const argv = input ? ["--progress", name, input] : ["--progress", name];
+      const argv = input ? ["--progress", "--", name, input] : ["--progress", name];
       stdout.write(`Running flow "${name}"...\n`);
       // flow.mjs main() prints the JSON result / errors to our streams itself.
       return _runFlow(argv).then(() => ({ redraw: true }), () => ({ redraw: true }));
@@ -390,6 +390,7 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
           mesh: o.mesh, // undefined → sm falls back to session default
           systemPrompt: o.systemPrompt,
           announce: false,
+          setCurrent: false,            // P1-9:fence 子会话不抢 human 当前会话
         }).then((label) => {
           if (!label) {
             return { ok: false, reason: "open failed" };

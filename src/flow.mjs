@@ -69,6 +69,17 @@ export function parseFlowArgs(argv) {
         out.workflowsRoot = v;
         break;
       }
+      case "--": {
+        // P2-45:`--` 之后全部按位置参数(name, input),不再做 flag 匹配——
+        // 让 input 为 --list/--workflows 等也能原样传给 flow。
+        for (i += 1; i < argv.length; i += 1) {
+          const t = argv[i];
+          if (out.name === null) out.name = t;
+          else if (out.input === null) out.input = t;
+          else { out._error = `unexpected argument: ${t}`; return out; }
+        }
+        return out;
+      }
       case "--help":
       case "-h":
         out._help = true;

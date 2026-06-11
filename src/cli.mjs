@@ -121,6 +121,14 @@ function parseArgs(argv) {
  * @param {object} env — typically process.env or an overridden map
  * @returns {boolean}
  */
+/**
+ * 退出矩阵模式判定(P2-44):仅交互 REPL 用 interactiveSigint(一次优雅 exit(0)/
+ * 二次强杀);--task 非交互模式被 SIGINT 打断须 exit(130),脚本/CI 才能区分中断。
+ */
+export function shutdownModeForArgv(argv) {
+  return { interactiveSigint: !argv.includes("--task") };
+}
+
 export function meshFromEnv(env) {
   const v = env.SYNOD_MESH;
   return v === "1" || v === "true";
@@ -467,7 +475,7 @@ function isEntrypoint(metaUrl) {
 const _isMain = isEntrypoint(import.meta.url);
 
 if (_isMain) {
-  installShutdownHandlers({ interactiveSigint: true });
+  installShutdownHandlers(shutdownModeForArgv(process.argv));
   // 启动顺扫:收割上次崩溃残留的孤儿(尽力而为,绝不阻断启动)。
   // 显式 `--reap` 命令例外:那条路径在 main() 里独占收割并打印准确摘要,
   // 此处再扫会抢先把孤儿收掉、令命令摘要失真为 reaped=0。

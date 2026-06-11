@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { createSessionManager } from "../src/session-manager.mjs";
-import { fakeOpenBackend } from "./helpers/fake-backend.mjs";
+import { fakeOpenBackend, FakeSession } from "./helpers/fake-backend.mjs";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -450,4 +450,18 @@ describe("createSessionManager", () => {
     assert.ok(label, "should open");
     assert.strictEqual(receivedMesh, true, "explicit mesh:true must override a mesh:false default");
   });
+});
+
+it("P1-9 open({setCurrent:false}) 不改 currentLabel", async () => {
+  const sm = createSessionManager({
+    openBackend: async () => new FakeSession({}),
+    stdout: { write() {} }, stderr: { write() {} },
+    report: { omp: { available: true } }, cwd: "/tmp", defaults: {},
+    onIdle: () => {},
+  });
+  const a = await sm.open({ agent: "omp" });               // 默认 setCurrent:true
+  assert.equal(sm.currentLabel, a);
+  const b = await sm.open({ agent: "omp", setCurrent: false });
+  assert.equal(sm.currentLabel, a, "fence 开的子会话不得抢走 human 当前会话");
+  assert.ok(sm._sessions.has(b));
 });

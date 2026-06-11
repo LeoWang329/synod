@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { parseArgs, meshFromEnv } from "../src/cli.mjs";
+import { parseArgs, meshFromEnv, shutdownModeForArgv } from "../src/cli.mjs";
 
 describe("parseArgs", () => {
   it("defaults: no args", () => {
@@ -177,4 +177,10 @@ describe("meshFromEnv", () => {
   it("arbitrary string → false", () => {
     assert.strictEqual(meshFromEnv({ SYNOD_MESH: "yes" }), false);
   });
+});
+
+it("P2-44 --task 模式 → interactiveSigint false(SIGINT 退 130)", () => {
+  assert.equal(shutdownModeForArgv(["node", "cli.mjs", "--task", "omp:hi"]).interactiveSigint, false);
+  assert.equal(shutdownModeForArgv(["node", "cli.mjs"]).interactiveSigint, true);
+  assert.equal(shutdownModeForArgv(["node", "cli.mjs", "--agent", "omp"]).interactiveSigint, true);
 });

@@ -444,7 +444,7 @@ describe("dispatch /flow command", () => {
     const { dispatch, flowCalls, stdout } = setup();
     const r = await dispatch("/flow qa-loop hello world");
     assert.strictEqual(r.redraw, true);
-    assert.deepStrictEqual(flowCalls, [["--progress", "qa-loop", "hello world"]]);
+    assert.deepStrictEqual(flowCalls, [["--progress", "--", "qa-loop", "hello world"]]);
     assert.ok(stdout.buf.includes('Running flow "qa-loop"'));
   });
 
@@ -466,7 +466,7 @@ describe("dispatch /flow command", () => {
   it("/flow preserves input spacing verbatim (JSON input survives)", async () => {
     const { dispatch, flowCalls } = setup();
     await dispatch('/flow qa-loop {"topic":"a b"}');
-    assert.deepStrictEqual(flowCalls, [["--progress", "qa-loop", '{"topic":"a b"}']]);
+    assert.deepStrictEqual(flowCalls, [["--progress", "--", "qa-loop", '{"topic":"a b"}']]);
   });
 
   it("/flow without a runFlow dep reports unavailable and does not throw", async () => {
@@ -629,4 +629,20 @@ describe("dispatch /open +profile", () => {
     assert.equal(res.ok, false);
     assert.match(res.reason, /allowWrite is false/);
   });
+});
+
+it("P1-9 fence /open 经 setCurrent:false 调 sm.open", async () => {
+  const opens = [];
+  const sm = {
+    _sessions: new Map(),
+    open: async (o) => { opens.push(o); return "omp#1"; },
+  };
+  const { createReplDispatch } = await import("../src/repl-dispatch.mjs");
+  const dispatch = createReplDispatch({
+    sm, registry: { add() {} }, stdout: { write() {} }, stderr: { write() {} },
+    defaultAgent: "omp", guardrails: { maxSessions: 10, maxDepth: 3, allowWrite: false },
+  });
+  const r = await dispatch("/open --agent omp", { source: "agent-fence", depth: 0 });
+  assert.equal(r.ok, true);
+  assert.equal(opens[0].setCurrent, false, "fence /open 必须 setCurrent:false(P1-9)");
 });

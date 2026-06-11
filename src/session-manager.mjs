@@ -124,7 +124,7 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
    *   - false:          silent (default session)
    * @returns {Promise<string|null>} label on success, null on failure
    */
-  async function open({ agent, model, effort, write, mesh, systemPrompt, announce = false }) {
+  async function open({ agent, model, effort, write, mesh, systemPrompt, announce = false, setCurrent = true }) {
     const m = model ?? _defaults.model;
     const e = effort ?? _defaults.effort;
     const w = write ?? _defaults.write;
@@ -161,7 +161,7 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
       session, agent, model: m, effort: e, lineBuf,
       sendQueue: createSendQueue(session, label, _onTurnComplete),
     });
-    _currentLabel = label;
+    if (setCurrent) _currentLabel = label;
 
     if (announce === "interactive") {
       stdout.write(`Opened ${label} (${agent})\n`);
