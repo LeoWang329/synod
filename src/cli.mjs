@@ -22,6 +22,7 @@ import { main as flowMain } from "./flow.mjs";
 import { prepareResume } from "./flow/replay.mjs";
 import { createInputRouter } from "./input-router.mjs";
 import { enabled } from "./ui/ansi.mjs";
+import { renderPrompt } from "./ui/prompt.mjs";
 import { relayBanner } from "./ui/decorations.mjs";
 import { installShutdownHandlers, closeAllLiveSessionsSync, gracefulShutdown } from "./shutdown.mjs";
 import { scanResidualWorktrees } from "./run-workspace.mjs";
@@ -402,7 +403,7 @@ async function main({
   router.pause();
   // Prompt redraw, guarded so no stray "> " is written after exit/close
   // (mirrors the old createRepl writePrompt guard).
-  const writePrompt = () => { if (!_exiting && !_closed) stdout.write("> "); };
+  const writePrompt = () => { if (!_exiting && !_closed) stdout.write(renderPrompt({ sm, stdout, env })); };
 
   // ── Relay registry (two-phase: created before sm, enqueue wired after) ──
   const colorOn = enabled(stdout, env);
