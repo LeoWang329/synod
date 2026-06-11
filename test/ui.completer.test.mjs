@@ -52,3 +52,10 @@ test("/relay → from-> 候选;含 -> 后补 to", () => {
   const [h2] = c("/relay omp#1->co");
   assert.ok(h2.includes("omp#1->codex#1"));
 });
+
+test("/open --agent <尾空格> → 列全部 backend 名", () => {
+  const c = makeCompleter({ sm: smWith([]), config: {}, flows: [], backendNames: () => ["omp", "codex"] });
+  const [h, w] = c("/open --agent ");
+  assert.deepEqual(h.sort(), ["codex", "omp"]);
+  assert.equal(w, "");
+});

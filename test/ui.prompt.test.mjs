@@ -31,9 +31,7 @@ test("TTY 当前忙 + 另有 2 个在跑 → 计数徽标(§1)", () => {
   assert.equal(stripAnsi(renderPrompt({ sm, stdout: { isTTY: true }, env: {} })), "[omp#1 ⠧ 2 running] ❯ ");
 });
 
-test("TTY 但 NO_COLOR → 徽标无色仍显示", () => {
+test("TTY 但 NO_COLOR → 恒 '> '(硬约束2:NO_COLOR 也降级)", () => {
   const sm = fakeSm([["omp#1", "idle"]], "omp#1");
-  const p = renderPrompt({ sm, stdout: { isTTY: true }, env: { NO_COLOR: "1" } });
-  assert.equal(p, "[omp#1] ❯ ");
-  assert.ok(!/\x1b/.test(p));
+  assert.equal(renderPrompt({ sm, stdout: { isTTY: true }, env: { NO_COLOR: "1" } }), "> ");
 });

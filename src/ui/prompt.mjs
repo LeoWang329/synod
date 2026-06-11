@@ -1,12 +1,11 @@
 // synod/src/ui/prompt.mjs — 主持人模式提示符:模式徽标 + 当前会话 + 忙闲(§1)。
 // 非 TTY 恒退化为 "> "(与现状一致,不破 e2e 的 "> " 探测)。徽标色:主持人=青(36)。
-import { color } from "./ansi.mjs";
+import { color, enabled } from "./ansi.mjs";
 
 /** 据当前 sm 状态渲染一行提示符字符串(含尾随空格)。 */
 export function renderPrompt({ sm, stdout, env = process.env }) {
-  if (!stdout || !stdout.isTTY) return "> ";
-  const useColor = !env.NO_COLOR;
-  const paint = (s) => (useColor ? color(36, s) : s);
+  if (!enabled(stdout, env)) return "> ";   // 非 TTY 或 NO_COLOR → 恒 "> "(硬约束2)
+  const paint = (s) => color(36, s);
 
   const cur = sm.currentLabel;
   if (!cur) return `${paint("synod")} ❯ `;

@@ -3,10 +3,10 @@
 import { enabled, color } from "./ansi.mjs";
 
 function rule(label, stdout, env, width = 50) {
+  if (!enabled(stdout, env)) return "";   // 非 TTY/NO_COLOR:零装饰行(硬约束2)
   const text = `── ${label} `;
   const dashes = "─".repeat(Math.max(3, width - text.length));
-  const line = text + dashes;
-  return (enabled(stdout, env) ? color(2, line) : line) + "\n";
+  return color(2, text + dashes) + "\n";
 }
 
 export function createFlowView({ stdout, name, clock = () => Date.now(), env = process.env }) {

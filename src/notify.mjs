@@ -13,8 +13,6 @@ export function createNotifier({ config, stdout = process.stdout, stderr = proce
     return new Promise((resolve) => {
       let done = false;
       const finish = () => { if (!done) { done = true; resolve(); } };
-      const timer = setTimeout(finish, HOOK_TIMEOUT_MS);
-      if (timer.unref) timer.unref();
       let child;
       try {
         child = spawn(cmd, {
@@ -29,9 +27,11 @@ export function createNotifier({ config, stdout = process.stdout, stderr = proce
         });
       } catch (err) {
         stderr.write(`synod: hook ${event} failed to start: ${err.message}\n`);
-        clearTimeout(timer);
         return finish();
       }
+      child.unref();   // 不因 hook 子进程拖住事件循环
+      const timer = setTimeout(() => { try { child.kill(); } catch {} finish(); }, HOOK_TIMEOUT_MS);
+      if (timer.unref) timer.unref();
       child.on("error", (err) => {
         stderr.write(`synod: hook ${event} error: ${err.message}\n`);
         clearTimeout(timer);

@@ -28,7 +28,7 @@ export function makeCompleter({ sm, config = { agents: {} }, flows = [], backend
     }
 
     if (cmd === "/open") {
-      const prev = endsSpace ? parts[parts.length - 1] : parts[parts.length - 2];
+      const prev = parts[parts.length - 2];
       if (prev === "--agent") {
         return [backendNames().filter((n) => n.startsWith(word)), word];
       }

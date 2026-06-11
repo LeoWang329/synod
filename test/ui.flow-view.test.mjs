@@ -10,7 +10,7 @@ function cap(isTTY = false) {
 
 test("banner + result:头尾横幅 + 结果 JSON + turns/sessions/耗时", () => {
   let t = 0;
-  const stdout = cap();
+  const stdout = cap(true);
   const view = createFlowView({ stdout, name: "qa-loop", clock: () => (t += 1000), env: {} });
   view.banner();
   const sink = view.countingSink({ emit() {} });

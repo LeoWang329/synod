@@ -246,6 +246,7 @@ export async function main({
   argv = process.argv.slice(2),
   stdout = process.stdout,
   stderr = process.stderr,
+  env = process.env,
   openBackend: ob = openBackend,
   workflowsRoot: defaultRoot = resolve(process.cwd(), "workflows"),
   cwd = process.cwd(),
@@ -343,7 +344,7 @@ export async function main({
   // ── Progress sink ───────────────────────────────────────────────────
   const progressEnabled = args.progress || process.env.SYNOD_PROGRESS === "1";
   const baseSink = progressEnabled ? createDefaultProgressSink(stdout) : undefined;
-  const view = progressEnabled ? createFlowView({ stdout, name: args.name, clock: () => Date.now() }) : null;
+  const view = progressEnabled ? createFlowView({ stdout, name: args.name, clock: () => Date.now(), env }) : null;
   const progressSink = view ? view.countingSink(baseSink) : baseSink;
 
   // per-run 目录由 logger 的 ensureRunDir 负责;不再在 cwd 建 artifacts。

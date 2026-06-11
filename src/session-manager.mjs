@@ -101,7 +101,7 @@ async function openSession({ agent, model, effort, write, mesh, systemPrompt, cw
  * @param {(label: string, result: object) => void} [opts.onTurnComplete] — called when a turn completes successfully (with the send result)
  * @param {boolean} [opts.errorLeadingNewline] — if true, prefix error lines with "\n" (interactive); default false (runTasks)
  */
-function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaults, onIdle, onTurnComplete, errorLeadingNewline = false, relays }) {
+function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaults, onIdle, onTurnComplete, errorLeadingNewline = false, relays, env = process.env }) {
   const _sessions = new Map(); // label → { session, agent, model, effort, lineBuf, sendQueue }
   let _currentLabel = null;
   let _pendingOpens = 0;
@@ -159,7 +159,7 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
       });
       if (!session) return null;
 
-      const useColor = enabled(stdout);
+      const useColor = enabled(stdout, env);
       const colorize = useColor ? (s) => color(labelColor(label), s) : null;
       const lineBuf = createLineBuffer(label, stdout, { colorize });
       session.on("delta", (chunk) => lineBuf.feed(chunk));
@@ -250,7 +250,7 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
       sessions: rows,
       currentLabel: _currentLabel,
       relays: _relays(),
-      colorOn: enabled(stdout),
+      colorOn: enabled(stdout, env),
     }));
   }
 
