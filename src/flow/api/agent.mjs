@@ -24,6 +24,7 @@
  * never blocks session teardown.
  */
 import { makeResolveOpts } from "./resolve-opts.mjs";
+import { raceAbort } from "./abortable.mjs";
 
 export function createAgent({
   openBackend,
@@ -32,6 +33,7 @@ export function createAgent({
   removeReusedSession,
   progress,
   config,
+  getSignal,
 }) {
   /** Best-effort await — never throws. */
   const bg = (p) => p.catch(() => {});
@@ -95,11 +97,13 @@ export function createAgent({
 
   async function agentOnce(
     ctx,
-    { agent: agentName, model, effort, write, mesh, systemPrompt, prompt, reuse },
+    { agent: agentName, model, effort, write, mesh, systemPrompt, prompt, reuse, signal: optsSignal },
   ) {
     const sink = progress;
 
     const runState = getRunState(ctx.runId);
+    // opts.signal 显式优先于 run 级 signal(CLI Ctrl-C / abortRun)。
+    const signal = optsSignal ?? getSignal?.(ctx.runId);
     const sessionKey = sessionKeyOf({ agent: agentName, model, effort, write, mesh, systemPrompt });
 
     let session;
@@ -185,7 +189,11 @@ export function createAgent({
     // ── Send + log + close ────────────────────────────────────────
     let result;
     try {
-      result = await session.send(prompt, { wait: true });
+      result = await raceAbort(
+        session.send(prompt, { wait: true }),
+        signal,
+        () => { try { session.close(); } catch {} },   // abort 杀进程
+      );
     } catch (sendErr) {
       // Log failure is best-effort
       await bg(logger.logStep(ctx, {

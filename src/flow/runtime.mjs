@@ -108,7 +108,7 @@ function defaultIo() {
  * ctx.runId — never stored on the pure-data ctx itself.
  */
 export function createRuntime({
-  fs, clock, openBackend, io, progress, config,
+  fs, clock, openBackend, io, progress, config, signal,
   workflowsRoot, maxDepth, maxActiveSubRuns,
 } = {}) {
   const resolvedIo = io ?? defaultIo();
@@ -121,16 +121,28 @@ export function createRuntime({
   function getRunState(runId) {
     let rs = _runs.get(runId);
     if (!rs) {
+      const controller = new AbortController();
+      // 外部 signal(CLI Ctrl-C)→ 联动 abort 本 run。
+      if (signal) {
+        if (signal.aborted) controller.abort();
+        else signal.addEventListener("abort", () => controller.abort(), { once: true });
+      }
       rs = {
         reusedSessions: new Map(),
         keyChains: new Map(),   // sessionKey → 串行链(reuse 调用排队,P1-6b)
         disposed: false,        // disposeRun 后立此标记,防复活(P1-7)
         lastSinkError: null,
+        controller,
       };
       _runs.set(runId, rs);
     }
     return rs;
   }
+
+  /** run 级 AbortSignal(原语用 opts.signal ?? 此值)。 */
+  function signalFor(runId) { return getRunState(runId).controller.signal; }
+  /** 主动 abort 一个 run(Ctrl-C 第一击 / dispose 前)。 */
+  function abortRun(ctx) { getRunState(ctx.runId).controller.abort(); }
 
   function removeReusedSession(runId, key) {
     const rs = _runs.get(runId);
@@ -144,6 +156,7 @@ export function createRuntime({
     removeReusedSession,
     progress,
     config,
+    getSignal: signalFor,
   });
 
   const bash = createBash({ logger });
@@ -153,6 +166,7 @@ export function createRuntime({
     logger,
     config,
     progress,
+    getSignal: signalFor,
   });
 
   const approve = createApprove({ io: resolvedIo, logger });
@@ -222,6 +236,8 @@ export function createRuntime({
     reviseWithHuman,
     /** disposeRun(ctx) — close reused sessions for a run. */
     disposeRun,
+    /** abortRun(ctx) — abort a run's AbortController (cooperative cancel). */
+    abortRun,
     /** Escape hatch for tests: return the per-run state map entry. */
     _getRunState: getRunState,
     /** Logger instance bound to the injected sinks. */

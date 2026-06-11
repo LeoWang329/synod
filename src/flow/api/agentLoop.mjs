@@ -24,8 +24,9 @@
  */
 
 import { makeResolveOpts } from "./resolve-opts.mjs";
+import { raceAbort } from "./abortable.mjs";
 
-export function createAgentLoop({ openBackend, logger, config, progress }) {
+export function createAgentLoop({ openBackend, logger, config, progress, getSignal }) {
   /** Best-effort await — never throws. */
   const bg = (p) => p.catch(() => {});
 
@@ -49,6 +50,8 @@ export function createAgentLoop({ openBackend, logger, config, progress }) {
       agent: agentName, model, effort, write, mesh, systemPrompt,
       prompt, until, maxTurns = 5,
     } = opts;
+    // opts.signal 显式优先于 run 级 signal(CLI Ctrl-C / abortRun)。
+    const signal = opts.signal ?? getSignal?.(ctx.runId);
     // ── Validation ──────────────────────────────────────────────────
     if (!ctx || typeof ctx.runId !== "string" || !ctx.runId) {
       throw new Error("agentLoop: ctx.runId is required (non-empty string)");
@@ -138,7 +141,11 @@ export function createAgentLoop({ openBackend, logger, config, progress }) {
 
         let result;
         try {
-          result = await session.send(promptText, { wait: true });
+          result = await raceAbort(
+            session.send(promptText, { wait: true }),
+            signal,
+            () => { try { session.close(); } catch {} },
+          );
         } catch (sendErr) {
           // Log failure is best-effort
           await bg(
