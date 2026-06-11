@@ -23,15 +23,20 @@
  * try/catch/finally — they use `.catch(() => {})` so a disk-full log
  * never blocks session teardown.
  */
+import { makeResolveOpts } from "./resolve-opts.mjs";
+
 export function createAgent({
   openBackend,
   logger,
   getRunState,
   removeReusedSession,
   progress,
+  config,
 }) {
   /** Best-effort await — never throws. */
   const bg = (p) => p.catch(() => {});
+
+  const resolveOpts = makeResolveOpts(config);
 
   /**
    * agent(ctx, opts) — call an agent backend, return accumulated text.
@@ -49,7 +54,8 @@ export function createAgent({
    * @param {boolean} [opts.reuse] – keep session alive for later calls
    * @returns {Promise<string>} accumulated response text
    */
-  async function agent(ctx, opts) {
+  async function agent(ctx, rawOpts) {
+    const opts = resolveOpts(rawOpts);
     validateAgentArgs(ctx, opts);
     if (!opts.reuse) return agentOnce(ctx, opts);
     // reuse = 同 key 串行:复用会话绝不并发 send(P1-6b)。
@@ -62,8 +68,8 @@ export function createAgent({
     return task;
   }
 
-  function sessionKeyOf({ agent: agentName, model }) {
-    return `${agentName}:${model ?? ""}`;
+  function sessionKeyOf({ agent: agentName, model, effort, write }) {
+    return `${agentName}:${model ?? ""}:${effort ?? ""}:${write ? "w" : "r"}`;
   }
 
   function validateAgentArgs(ctx, { agent: agentName, model, prompt }) {
@@ -88,12 +94,12 @@ export function createAgent({
 
   async function agentOnce(
     ctx,
-    { agent: agentName, model, prompt, reuse },
+    { agent: agentName, model, effort, write, mesh, systemPrompt, prompt, reuse },
   ) {
     const sink = progress;
 
     const runState = getRunState(ctx.runId);
-    const sessionKey = `${agentName}:${model ?? ""}`;
+    const sessionKey = sessionKeyOf({ agent: agentName, model, effort, write });
 
     let session;
     let reused = false;
@@ -115,6 +121,10 @@ export function createAgent({
         session = await openBackend({
           agent: agentName,
           model,
+          effort,
+          write,
+          mesh,
+          systemPrompt,
           cwd: ctx.cwd,
         });
       } catch (openErr) {

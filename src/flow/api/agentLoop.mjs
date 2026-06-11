@@ -23,9 +23,13 @@
  * for each turn.  `turn` is 1-indexed.
  */
 
-export function createAgentLoop({ openBackend, logger }) {
+import { makeResolveOpts } from "./resolve-opts.mjs";
+
+export function createAgentLoop({ openBackend, logger, config, progress }) {
   /** Best-effort await — never throws. */
   const bg = (p) => p.catch(() => {});
+
+  const resolveOpts = makeResolveOpts(config);
 
   /**
    * agentLoop(ctx, opts) — multi-turn agent iteration within a node.
@@ -39,10 +43,12 @@ export function createAgentLoop({ openBackend, logger }) {
    * @param {number} [opts.maxTurns=5]
    * @returns {Promise<string>} final accumulated text
    */
-  async function agentLoop(
-    ctx,
-    { agent: agentName, model, prompt, until, maxTurns = 5 },
-  ) {
+  async function agentLoop(ctx, rawOpts) {
+    const opts = resolveOpts(rawOpts);
+    const {
+      agent: agentName, model, effort, write, mesh, systemPrompt,
+      prompt, until, maxTurns = 5,
+    } = opts;
     // ── Validation ──────────────────────────────────────────────────
     if (!ctx || typeof ctx.runId !== "string" || !ctx.runId) {
       throw new Error("agentLoop: ctx.runId is required (non-empty string)");
@@ -76,6 +82,10 @@ export function createAgentLoop({ openBackend, logger }) {
       session = await openBackend({
         agent: agentName,
         model,
+        effort,
+        write,
+        mesh,
+        systemPrompt,
         cwd: ctx.cwd,
       });
     } catch (openErr) {
@@ -104,6 +114,16 @@ export function createAgentLoop({ openBackend, logger }) {
       }),
     );
 
+    // ── Progress sink (delta passthrough across all turns) ──────────
+    const sink = progress;
+    let onDelta = null;
+    if (sink) {
+      onDelta = (chunk) => {
+        try { sink.emit({ type: "delta", agent: agentName, model, text: chunk }); } catch {}
+      };
+      session.on("delta", onDelta);
+    }
+
     // ── Loop ────────────────────────────────────────────────────────
     let lastOutput = "";
 
@@ -111,6 +131,10 @@ export function createAgentLoop({ openBackend, logger }) {
       for (let turn = 1; turn <= maxTurns; turn++) {
         const promptText =
           typeof prompt === "function" ? prompt(turn, lastOutput) : prompt;
+
+        if (sink) {
+          try { sink.emit({ type: "start", agent: agentName, model }); } catch {}
+        }
 
         let result;
         try {
@@ -152,6 +176,7 @@ export function createAgentLoop({ openBackend, logger }) {
       // maxTurns reached
       return lastOutput;
     } finally {
+      if (onDelta) session.off("delta", onDelta);
       session.close();
       await bg(
         logger.logSession(ctx, {

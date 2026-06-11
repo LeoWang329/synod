@@ -108,7 +108,7 @@ function defaultIo() {
  * ctx.runId — never stored on the pure-data ctx itself.
  */
 export function createRuntime({
-  fs, clock, openBackend, io, progress,
+  fs, clock, openBackend, io, progress, config,
   workflowsRoot, maxDepth, maxActiveSubRuns,
 } = {}) {
   const resolvedIo = io ?? defaultIo();
@@ -143,6 +143,7 @@ export function createRuntime({
     getRunState,
     removeReusedSession,
     progress,
+    config,
   });
 
   const bash = createBash({ logger });
@@ -150,6 +151,8 @@ export function createRuntime({
   const agentLoop = createAgentLoop({
     openBackend: resolvedOpenBackend,
     logger,
+    config,
+    progress,
   });
 
   const approve = createApprove({ io: resolvedIo, logger });

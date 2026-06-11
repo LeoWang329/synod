@@ -257,6 +257,17 @@ export async function main({
   // Ensure artifacts directory exists for logger
   await mkdir("artifacts", { recursive: true }).catch(() => {});
 
+  // Load config (profiles + custom backends) before building the runtime.
+  let config;
+  try {
+    const { loadConfig, registerConfigBackends } = await import("./config.mjs");
+    config = await loadConfig({ cwd, home: process.env.SYNOD_HOME || undefined });
+    await registerConfigBackends(config);
+  } catch (err) {
+    stderr.write(`Error: ${err.message}\n`);
+    return 1;
+  }
+
   // Build runtime with real dependencies
   let runtime;
   try {
@@ -266,6 +277,7 @@ export async function main({
       clock: () => Date.now(),
       fs: realFs,
       progress: progressSink,
+      config,
     });
   } catch (err) {
     stderr.write(`Error: failed to create runtime: ${err.message}\n`);
