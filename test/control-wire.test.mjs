@@ -363,3 +363,50 @@ it("P1-11 drainControl() 等待在飞 fence dispatch 完成", async () => {
   await dp;
   assert.equal(drained, true);
 });
+
+it("B4 drainControl 循环排到静默:在飞 dispatch 期间新增的 in-flight 也被等到", async () => {
+  // 单快照 bug:drainControl 取一次 [..._inflight] 快照后,某个在飞 dispatch 在 await
+  // 期间又触发新一轮 onTurnComplete(新 in-flight task),旧版会在第一批 settle 后提前
+  // resolve、漏等新 task。循环版必须排到 _inflight 真正为空。
+  let onTurnComplete, drainControl;
+  let releaseSecond;
+  const secondGate = new Promise((r) => { releaseSecond = r; });
+  let secondStarted = false;
+  let secondDone = false;
+
+  let calls = 0;
+  const dispatch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      // 让出一拍(drainControl 此时已对 [task1] 快照),再触发新一轮 → 产生 task2。
+      await new Promise((r) => setTimeout(r, 5));
+      onTurnComplete("omp#2", { text: "```synod\n/open --agent omp\n```\n" });
+      return { ok: true };
+    }
+    secondStarted = true;
+    await secondGate;          // task2 卡住,直到 releaseSecond()
+    secondDone = true;
+    return { ok: true };
+  };
+
+  const sm = { _sessions: new Map() };
+  const registry = { onTurnComplete() {} };
+  ({ onTurnComplete, drainControl } = wireControl({
+    sm, registry, stderr: { write() {} }, dispatch,
+  }));
+
+  await onTurnComplete("omp#1", { text: "```synod\n/open --agent omp\n```\n" });
+  // 此刻只有 task1 在飞(task2 尚未产生)。
+  let drained = false;
+  const dp = drainControl().then(() => { drained = true; });
+
+  await new Promise((r) => setTimeout(r, 30));  // 等 task1 完成 + task2 起飞但仍卡 gate
+  assert.equal(secondStarted, true, "task2 应已起飞");
+  assert.equal(secondDone, false);
+  assert.equal(drained, false, "task2 未完时 drainControl 不应 resolve(单快照 bug 会在此提前 resolve)");
+
+  releaseSecond();
+  await dp;
+  assert.equal(drained, true);
+  assert.equal(secondDone, true);
+});

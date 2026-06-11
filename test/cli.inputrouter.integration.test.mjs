@@ -75,3 +75,48 @@ export async function run(ctx) {
   // "accept" 不应被当成发给 omp#1 的裸消息回显
   assert.ok(!/\[omp#1\] .*accept/.test(stdout.text()), "approve 的输入不得泄漏给会话");
 });
+
+// B2:approve 等待人输入时遇到 Ctrl-D/EOF。readline 'close' 触发,若此刻 flow 卡在
+// router.claim,该 claim 永不 settle → onClose `await _pendingFlows` 永挂。修复后:
+// onClose 先 abort 活动 flow(run 级 signal → approve 协作取消)+ input-router 'close'
+// 兜底 release pending claim。断言:进程不挂死、退出码 0、flow 以 aborted 收口。
+test("REPL /flow approve 等待中 stdin EOF:不挂死、退出 0、flow 以 aborted 收口", async () => {
+  const home = mkdtempSync(join(tmpdir(), "synod-ir-home-"));
+  const proj = mkdtempSync(join(tmpdir(), "synod-ir-proj-"));
+  mkdirSync(join(home, ".synod"), { recursive: true });
+  mkdirSync(join(proj, "workflows"));
+  mkdirSync(join(proj, "node_modules"), { recursive: true });
+  symlinkSync(PKG_ROOT, join(proj, "node_modules", "synod"), "dir");
+  writeFileSync(join(proj, "workflows", "ask.mjs"), `
+import { approve } from "synod/flow";
+export const meta = { description: "ask once" };
+export async function run(ctx) {
+  const d = await approve(ctx, { content: "ready?" });
+  return { decision: d };
+}
+`);
+  process.chdir(proj);
+  const { main } = await import("../src/cli.mjs");
+  const stdin = new PassThrough(); stdin.isTTY = false;
+  const stdout = collector(); const stderr = collector();
+  const done = main({
+    argv: ["node", "cli.mjs", "--agent", "omp"],
+    stdin, stdout, stderr,
+    env: { SYNOD_HOME: home },
+    workflowsRoot: join(proj, "workflows"),
+    openBackend: async () => {
+      const { FakeSession } = await import("./helpers/fake-backend.mjs");
+      return new FakeSession({ deltas: ["hi"] });
+    },
+  });
+  stdin.write("/flow ask\n");
+  await waitFor(() => stdout.text().includes("(accept / feedback / /abort)"));
+  // approve 正卡在 router.claim;此刻 EOF(Ctrl-D)——修复前会死锁在 onClose。
+  stdin.end();
+  const code = await done;                    // 若死锁,这里 hang 到 node --test 超时
+  assert.equal(code, 0, stderr.text());
+  // flow 以 aborted 收口(approve 的 abort 路径返回 { aborted: true }),其结果被打印。
+  assert.match(stdout.text(), /"aborted": true/);
+  // EOF 没有任何人输入,绝不可有内容被当成裸消息回显给会话。
+  assert.ok(!/\[omp#1\] /.test(stdout.text()), "EOF 期间不得泄漏输入给会话");
+});

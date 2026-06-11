@@ -79,7 +79,11 @@ export function wireControl({ sm, registry, stderr, dispatch }) {
   }
 
   // 退出前调用:等所有在飞 dispatch 落地(其新开会话因此对 closeAll 可见)。
-  function drainControl() { return Promise.allSettled([..._inflight]); }
+  // B4:循环排到真正静默——一个在飞 dispatch 在 await 期间可能再触发新一轮 in-flight
+  // (新 turn 完成 → onTurnComplete → 新 task),单次快照会漏掉这些后到的 task。
+  async function drainControl() {
+    while (_inflight.size) await Promise.allSettled([..._inflight]);
+  }
 
   return { onTurnComplete, drainControl };
 }

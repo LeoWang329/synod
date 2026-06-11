@@ -1108,7 +1108,11 @@ class CodexSession extends EventEmitter {
       `> ${JSON.stringify(msg).slice(0, 600)}\n`,
     );
     const stdin = this.proc?.stdin;
-    if (!stdin || stdin.destroyed || this.proc.exitCode !== null) {
+    // 死管道门控(与 OmpSession 对齐):stdin 不存在/已销毁,或我们 spawn 的子进程
+    // 已退出(exitCode!==null)或被信号杀(signalCode!==null,SIGKILL 后 exitCode 仍
+    // null)→ 同步拒绝,绝不裸写。signalCode 用 ?? null 归一(fake 无该字段→undefined)。
+    if (!stdin || stdin.destroyed ||
+        this.proc.exitCode !== null || (this.proc.signalCode ?? null) !== null) {
       throw new Error("codex app-server stdin is not writable");
     }
     stdin.write(`${JSON.stringify(msg)}\n`);
@@ -1335,7 +1339,7 @@ class CodexSession extends EventEmitter {
       throw new Error("message is required.");
     if (this.status === "closed")
       throw new Error(`Codex session ${this.id} is closed.`);
-    if (!this.proc || this.proc.exitCode !== null)
+    if (!this.proc || this.proc.exitCode !== null || (this.proc.signalCode ?? null) !== null)
       throw new Error(
         `Codex app-server for ${this.id} is not running.`,
       );
@@ -1506,10 +1510,13 @@ class CodexSession extends EventEmitter {
     if (interruptedTurnId) this.#ignoreTurn(interruptedTurnId);
     // Only return to idle if the app-server is still alive; otherwise leave the
     // failed/closed status instead of masking a dead backend as reusable.
+    // signalCode 也要查(SIGKILL 后 exitCode 仍 null):用 ?? null 归一,fake 无该
+    // 字段→undefined→视为存活,保持既有 fake 行为不变。
     if (
       this.status !== "closed" &&
       this.proc &&
-      this.proc.exitCode === null
+      this.proc.exitCode === null &&
+      (this.proc.signalCode ?? null) === null
     ) {
       this.#setStatus("idle", false, { source: "abort" });
     }

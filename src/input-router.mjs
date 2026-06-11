@@ -28,6 +28,11 @@ export function createInputRouter({ stdin, stdout }) {
     if (_lineHandler) _lineHandler(line);
   });
 
+  // EOF/Ctrl-D backstop:rl 'close' 时若有 pending claim(flow 卡在 approve/question
+  // 等输入),release() 兜底 reject(AbortError),否则该 claim 永不 settle、cli 的
+  // onClose `await _pendingFlows` 会永挂(B2)。无 pending 时 no-op,不影响 /exit 路径。
+  rl.on("close", () => { if (_claim) release(); });
+
   function onLine(fn) {
     _lineHandler = fn;
     return () => { if (_lineHandler === fn) _lineHandler = null; };

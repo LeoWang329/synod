@@ -421,16 +421,29 @@ async function main({
     _closed = true;
     let exitCode = 0;
     try {
+      // B2: abort any active /flow runs FIRST, before awaiting them.  A flow
+      // blocked on approve()/question() (router.claim awaiting a human line that
+      // EOF will never deliver) only settles once its run-level signal fires →
+      // approve/agent/bash cancel cooperatively → flow resolves.  Without this,
+      // the await below would hang forever on Ctrl-D with a pending approve.
+      for (const h of _activeFlows) h.ctrl.abort();
       // Let any in-flight /flow runs finish first so they tear down their own
       // agent sessions (otherwise /exit would orphan them).
       if (_pendingFlows.size > 0) {
         await Promise.allSettled([..._pendingFlows]);
       }
-      await sm.drainAll();
-      // P1-11: 等在飞 fence dispatch 落地(其 /open 的新会话因此进入 _sessions),
+      // P1-11 + B4: 等在飞 fence dispatch 落地(其 /open 的新会话因此进入 _sessions),
       // 再排一轮队尾——之后 closeAll 才能把它们一并关掉,不留窗口外的新会话。
-      await drainControl();
-      await sm.drainAll();
+      // 有界不动点:被排空的 turn 可能再吐 control fence /open 出新会话,新会话首个
+      // turn 又可能吐 fence——故循环 drainAll/drainControl 直到一轮内 sessionLoad 不再
+      // 增长(drainControl 现已内部排到 _inflight 真正静默)。最多 5 轮,防失控。
+      for (let round = 0; round < 5; round += 1) {
+        const before = sm.sessionLoad;
+        await sm.drainAll();
+        await drainControl();
+        await sm.drainAll();
+        if (sm.sessionLoad === before) break;
+      }
     } catch (err) {
       exitCode = 1;
       stderr.write(`synod: ${err.stack || err.message}\n`);
@@ -475,7 +488,12 @@ async function main({
   let _sigintCount = 0;
   router.onSigint(() => {
     if (_activeFlows.size > 0 && _sigintCount === 0) {
-      _sigintCount += 1;
+      // B3: abort active flows but DO NOT advance _sigintCount.  Leaving it at 0
+      // means that once the flow tears down and the user is back at the REPL, the
+      // next Ctrl-C starts fresh from the first (graceful) strike instead of being
+      // mistaken for a second strike (force exit).  The `_sigintCount === 0` guard
+      // still lets a Ctrl-C during an already-started graceful shutdown fall
+      // through to force exit below.
       stderr.write("\nInterrupted. Cleaning up...\n");
       for (const h of _activeFlows) h.ctrl.abort();
       return;
