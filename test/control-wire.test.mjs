@@ -344,3 +344,22 @@ describe("wireControl empty/rejected paths", () => {
     assert.strictEqual(stderr.buf, "");
   });
 });
+
+it("P1-11 drainControl() 等待在飞 fence dispatch 完成", async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const dispatch = async () => { await gate; return { ok: true, label: "omp#2" }; };
+  const sm = { _sessions: new Map() };
+  const registry = { onTurnComplete() {} };
+  const { onTurnComplete, drainControl } = wireControl({
+    sm, registry, stderr: { write() {} }, dispatch,
+  });
+  await onTurnComplete("omp#1", { text: "```synod\n/open --agent omp\n```\n" });   // fire-and-forget 起飞
+  let drained = false;
+  const dp = drainControl().then(() => { drained = true; });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(drained, false, "dispatch 未完时 drainControl 不应 resolve");
+  release();
+  await dp;
+  assert.equal(drained, true);
+});

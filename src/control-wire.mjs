@@ -19,13 +19,14 @@ import { extractFenceCommands } from "./control-fence.mjs";
  * @param {object} deps.registry — relay registry (.onTurnComplete)
  * @param {{ write(s: string): void }} deps.stderr
  * @param {function} deps.dispatch — agent-fence dispatch (from createReplDispatch)
- * @returns {{ onTurnComplete: (label: string, result: { text: string }) => Promise<void> }}
+ * @returns {{ onTurnComplete: (label: string, result: { text: string }) => Promise<void>, drainControl: () => Promise<void> }}
  */
 export function wireControl({ sm, registry, stderr, dispatch }) {
   // Per-label depth tracking: when a session's turn produces a /open,
   // the child gets depth + 1.  Wire layer maintains this map; dispatch
   // receives depth as an input parameter.
   const _depthMap = new Map();
+  const _inflight = new Set();         // P1-11: 在飞 fence dispatch,供退出前排水
 
   /**
    * Called after each turn completes.  Runs relay first (synchronous),
@@ -52,7 +53,7 @@ export function wireControl({ sm, registry, stderr, dispatch }) {
 
     // Fire-and-forget: dispatch runs asynchronously, errors do not
     // propagate to the turn-completion caller.
-    (async () => {
+    const task = (async () => {
       const depth = _depthMap.get(label) ?? 0;
 
       for (const line of lines) {
@@ -72,10 +73,13 @@ export function wireControl({ sm, registry, stderr, dispatch }) {
           stderr.write(`[control warn] ${r.reason}\n`);
         }
       }
-    })().catch(() => {
-      // Fire-and-forget: silently drop any unhandled rejections
-    });
+    })();
+    _inflight.add(task);
+    task.catch(() => {}).finally(() => _inflight.delete(task));
   }
 
-  return { onTurnComplete };
+  // 退出前调用:等所有在飞 dispatch 落地(其新开会话因此对 closeAll 可见)。
+  function drainControl() { return Promise.allSettled([..._inflight]); }
+
+  return { onTurnComplete, drainControl };
 }

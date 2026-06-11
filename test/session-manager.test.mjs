@@ -465,3 +465,19 @@ it("P1-9 open({setCurrent:false}) 不改 currentLabel", async () => {
   assert.equal(sm.currentLabel, a, "fence 开的子会话不得抢走 human 当前会话");
   assert.ok(sm._sessions.has(b));
 });
+
+it("P2-37 并发 open 期间 sessionLoad 同步反映在飞数(关 check-then-act 窗口)", async () => {
+  let resolveOpen;
+  const sm = createSessionManager({
+    openBackend: () => new Promise((r) => { resolveOpen = r; }),   // 挂住 backend 启动
+    stdout: { write() {} }, stderr: { write() {} },
+    report: { omp: { available: true } }, cwd: "/tmp", defaults: {},
+    onIdle: () => {},
+  });
+  assert.equal(sm.sessionLoad, 0);
+  const p = sm.open({ agent: "omp" });                 // 启动中(未 await 完)
+  assert.equal(sm.sessionLoad, 1, "在飞 open 必须立即计入 load");
+  resolveOpen(new FakeSession({}));
+  await p;
+  assert.equal(sm.sessionLoad, 1, "完成后 = 真实会话数");
+});

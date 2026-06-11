@@ -98,7 +98,8 @@ export function parseOpenArgs(tokens) {
 // maxSessions + allowWrite below, none of which mesh can bypass.  Gating mesh
 // escalation would therefore be theater, not defense.
 function guardOpen({ agent, model, write }, depth, sm, g) {
-  if (sm._sessions.size >= g.maxSessions) {
+  const load = sm.sessionLoad ?? sm._sessions.size;   // 向后兼容无 getter 的 stub
+  if (load >= g.maxSessions) {
     return `max sessions (${g.maxSessions}) reached`;
   }
   if (depth >= g.maxDepth) {

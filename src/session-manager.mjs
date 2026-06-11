@@ -96,6 +96,7 @@ async function openSession({ agent, model, effort, write, mesh, systemPrompt, cw
 function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaults, onIdle, onTurnComplete, errorLeadingNewline = false }) {
   const _sessions = new Map(); // label → { session, agent, model, effort, lineBuf, sendQueue }
   let _currentLabel = null;
+  let _pendingOpens = 0;
 
   const _defaults = { model: undefined, effort: undefined, write: false, mesh: false, ...defaults };
   const _onIdle = onIdle || (() => {});
@@ -132,41 +133,48 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
 
     if (!checkAgentAvailable(agent, report, stderr)) return null;
 
-    const label = allocLabel(agent);
-    if (announce === "task") {
-      stderr.write(`Opening ${label} (${agent})...\n`);
-    } else if (announce === "interactive") {
-      stdout.write(`Opening ${label} (${agent})...\n`);
-    }
-
-    const session = await openSession({
-      agent, model: m, effort: e, write: w, mesh: me, systemPrompt,
-      cwd, report, openBackend, stderr,
-    });
-    if (!session) return null;
-
-    const lineBuf = createLineBuffer(label, stdout);
-    session.on("delta", (chunk) => lineBuf.feed(chunk));
-    session.on("error", (err) => {
-      stderr.write(`${_nl}[${label} error] ${err.message}\n`);
-    });
-    session.on("status", ({ status }) => {
-      if (status === "idle") {
-        lineBuf.flush();
-        _onIdle(label);
+    // P2-37: guard 读的是 sessionLoad(= _sessions.size + 在飞 open 数)。这里同步 +1,
+    // 使后续并发 fence /open 的 guardOpen 立刻看到本次占用,关掉 check-then-act 窗口。
+    _pendingOpens += 1;
+    try {
+      const label = allocLabel(agent);
+      if (announce === "task") {
+        stderr.write(`Opening ${label} (${agent})...\n`);
+      } else if (announce === "interactive") {
+        stdout.write(`Opening ${label} (${agent})...\n`);
       }
-    });
 
-    _sessions.set(label, {
-      session, agent, model: m, effort: e, lineBuf,
-      sendQueue: createSendQueue(session, label, _onTurnComplete),
-    });
-    if (setCurrent) _currentLabel = label;
+      const session = await openSession({
+        agent, model: m, effort: e, write: w, mesh: me, systemPrompt,
+        cwd, report, openBackend, stderr,
+      });
+      if (!session) return null;
 
-    if (announce === "interactive") {
-      stdout.write(`Opened ${label} (${agent})\n`);
+      const lineBuf = createLineBuffer(label, stdout);
+      session.on("delta", (chunk) => lineBuf.feed(chunk));
+      session.on("error", (err) => {
+        stderr.write(`${_nl}[${label} error] ${err.message}\n`);
+      });
+      session.on("status", ({ status }) => {
+        if (status === "idle") {
+          lineBuf.flush();
+          _onIdle(label);
+        }
+      });
+
+      _sessions.set(label, {
+        session, agent, model: m, effort: e, lineBuf,
+        sendQueue: createSendQueue(session, label, _onTurnComplete),
+      });
+      if (setCurrent) _currentLabel = label;
+
+      if (announce === "interactive") {
+        stdout.write(`Opened ${label} (${agent})\n`);
+      }
+      return label;
+    } finally {
+      _pendingOpens -= 1;
     }
-    return label;
   }
 
   /**
@@ -286,6 +294,7 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
     entries,
     get currentLabel() { return _currentLabel; },
     get _sessions() { return _sessions; },
+    get sessionLoad() { return _sessions.size + _pendingOpens; },
   };
 }
 

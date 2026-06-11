@@ -400,7 +400,7 @@ async function main({
     config,
   });
 
-  const { onTurnComplete: composedOnTurnComplete } = wireControl({
+  const { onTurnComplete: composedOnTurnComplete, drainControl } = wireControl({
     sm, registry, stderr, dispatch,
   });
   _composedOnTurnComplete = composedOnTurnComplete;
@@ -430,6 +430,10 @@ async function main({
         if (_pendingFlows.size > 0) {
           await Promise.allSettled([..._pendingFlows]);
         }
+        await sm.drainAll();
+        // P1-11: 等在飞 fence dispatch 落地(其 /open 的新会话因此进入 _sessions),
+        // 再排一轮队尾——之后 closeAll 才能把它们一并关掉,不留窗口外的新会话。
+        await drainControl();
         await sm.drainAll();
       } catch (err) {
         exitCode = 1;
