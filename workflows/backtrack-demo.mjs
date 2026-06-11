@@ -15,7 +15,8 @@ export async function run(ctx, input) {
 
   const result = await backtrack(ctx, {
     initialPrompt: `Write exactly ONE sentence about ${topic}. Keep it short.`,
-    produce: async (ctx, prompt) => agent(ctx, { agent: "omp", prompt }),
+    // omp 出稿 model 经 SYNOD_FLOW_MODEL 注入(minimax 余额不足时切 deepseek);codex 评审不变。
+    produce: async (ctx, prompt) => agent(ctx, { agent: "omp", model: process.env.SYNOD_FLOW_MODEL || undefined, prompt }),
     review: async (output) => {
       const reviewText = await agent(ctx, {
         agent: "codex",

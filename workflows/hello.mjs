@@ -12,6 +12,7 @@ export const meta = {
 
 export async function run(ctx, input) {
   const prompt = typeof input === "string" ? input : (input?.prompt ?? "Say hello in exactly one sentence.");
-  const result = await agent(ctx, { agent: "omp", prompt });
+  // model 经 SYNOD_FLOW_MODEL 注入(e2e 在 minimax 余额不足时切 deepseek);未设则用 omp 默认。
+  const result = await agent(ctx, { agent: "omp", model: process.env.SYNOD_FLOW_MODEL || undefined, prompt });
   return { response: result };
 }

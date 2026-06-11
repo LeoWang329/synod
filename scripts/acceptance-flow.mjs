@@ -16,6 +16,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 import { doctor } from "../src/backend.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -24,8 +25,8 @@ const FLOW_CLI = path.resolve(ROOT, "src", "flow.mjs");
 const NODE = process.execPath;
 const FIXTURES_VALID = path.resolve(ROOT, "fixtures", "workflows", "valid");
 const WORKFLOWS_DIR = path.resolve(ROOT, "workflows");
-const LOG_PATH = path.resolve(ROOT, "run.log.jsonl");
-const ARTIFACTS_DIR = path.resolve(ROOT, "artifacts");
+// Task 12 起 flow 日志写到 per-run 目录 ~/.synod/runs/<runId>/run.log.jsonl(不再是仓库根)。
+const RUNS_ROOT = path.resolve(os.homedir(), ".synod", "runs");
 
 const passed = [];
 const failed = [];
@@ -84,14 +85,31 @@ function runFlowCli(args, { inputLines = [], timeoutMs = 120_000 } = {}) {
   });
 }
 
-async function cleanLog() {
-  try { await fs.unlink(LOG_PATH); } catch {}
-  try { await fs.rm(ARTIFACTS_DIR, { recursive: true, force: true }); } catch {}
+// 快照已存在的 run 目录名,让每个测试只读它本次调用产生的 run.log.jsonl。
+// 嵌套流程父子各有独立 per-run 目录(child 的条目带 parentRunId)——这里把本次
+// 新建的所有 run 目录日志合并成一个数组,FA5 那种跨 runId 的 parentRunId 断言照旧成立。
+async function snapshotRuns() {
+  try {
+    const ents = await fs.readdir(RUNS_ROOT, { withFileTypes: true });
+    return new Set(ents.filter((e) => e.isDirectory()).map((e) => e.name));
+  } catch { return new Set(); }
 }
 
-async function readLogLines() {
-  try { const r = await fs.readFile(LOG_PATH, "utf-8"); return r.trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)); }
+async function readNewLogLines(before) {
+  let ents;
+  try { ents = await fs.readdir(RUNS_ROOT, { withFileTypes: true }); }
   catch { return []; }
+  const lines = [];
+  for (const e of ents) {
+    if (!e.isDirectory() || before.has(e.name)) continue;
+    try {
+      const raw = await fs.readFile(path.join(RUNS_ROOT, e.name, "run.log.jsonl"), "utf-8");
+      for (const l of raw.trim().split("\n").filter(Boolean)) {
+        try { lines.push(JSON.parse(l)); } catch {}
+      }
+    } catch {}
+  }
+  return lines;
 }
 
 function extractLastJson(text) {
@@ -149,7 +167,7 @@ async function test_FA1() {
 async function test_FA2(ompOk) {
   console.log("\nFA2: linear flow + real omp");
   if (!ompOk) { skip("FA2", "omp unavailable"); return; }
-  await cleanLog();
+  const before = await snapshotRuns();
 
   const r = await runFlowCli(
     ["--workflows", WORKFLOWS_DIR, "hello", JSON.stringify({ prompt: "Say exactly: TEST-PASSED" })],
@@ -160,7 +178,7 @@ async function test_FA2(ompOk) {
   try { out = JSON.parse(r.stdout.trim()); } catch { fail("FA2", `bad JSON: ${r.stdout.slice(0,200)}`); return; }
   if (!out.response || typeof out.response !== "string" || !out.response) { fail("FA2", `bad output`); return; }
 
-  const ll = await readLogLines();
+  const ll = await readNewLogLines(before);
 
   // session open/close paired by sessionId (exact set equality)
   const opens  = ll.filter((l) => l.event === "session:open");
@@ -196,7 +214,7 @@ async function test_FA3(codexOk, ompOk) {
   console.log("\nFA3: backtrack flow + codex review");
   if (!ompOk) { skip("FA3", "omp unavailable"); return; }
   if (!codexOk) { skip("FA3", "codex unavailable"); return; }
-  await cleanLog();
+  const before = await snapshotRuns();
 
   const r = await runFlowCli(
     ["--workflows", WORKFLOWS_DIR, "backtrack-demo", JSON.stringify({ topic: "testing" })],
@@ -214,7 +232,7 @@ async function test_FA3(codexOk, ompOk) {
   // Hardened: passed on first try ⇒ attempts===1
   if (out.passed && out.attempts !== 1) { fail("FA3", `passed but attempts=${out.attempts} (expected 1)`); return; }
 
-  const ll = await readLogLines();
+  const ll = await readNewLogLines(before);
 
   // Hardened: codex session must exist (the assertion was in comment but not code)
   if (!ll.some((l) => l.event === "session:open" && l.agent === "codex")) {
@@ -241,7 +259,7 @@ async function test_FA3(codexOk, ompOk) {
 async function test_FA4(ompOk) {
   console.log("\nFA4: reviseWithHuman — scripted stdin");
   if (!ompOk) { skip("FA4", "omp unavailable"); return; }
-  await cleanLog();
+  const before = await snapshotRuns();
 
   const feedbackText = "Make it sound like a haiku about nature";
 
@@ -264,7 +282,7 @@ async function test_FA4(ompOk) {
   if (!out.final || typeof out.final !== "string" || out.final.length < 5) { fail("FA4", `bad final`); return; }
   if (out.final === "The sky is blue.") { fail("FA4", "not revised"); return; }
 
-  const ll = await readLogLines();
+  const ll = await readNewLogLines(before);
   const apOk = ll.filter((l) => l.event === "step:succeeded" && l.node === "approve");
   if (apOk.length < 2) { fail("FA4", `need >=2 approve succeeded, got ${apOk.length}`); return; }
 
@@ -296,7 +314,7 @@ async function test_FA4(ompOk) {
 async function test_FA5(ompOk) {
   console.log("\nFA5: nested flow — parent calls child");
   if (!ompOk) { skip("FA5", "omp unavailable"); return; }
-  await cleanLog();
+  const before = await snapshotRuns();
 
   const r = await runFlowCli(["--workflows", WORKFLOWS_DIR, "parent"], { timeoutMs: 120_000 });
   if (r.code !== 0) { fail("FA5", `exit ${r.code}: ${r.stderr.slice(0,300)}`); return; }
@@ -310,7 +328,7 @@ async function test_FA5(ompOk) {
     fail("FA5", `child.received=${JSON.stringify(out.fromChild.received)} expected "hello from parent"`); return;
   }
 
-  const ll = await readLogLines();
+  const ll = await readNewLogLines(before);
   const childEntries = ll.filter((l) => l.parentRunId);
   if (childEntries.length === 0) { fail("FA5", "no child entries with parentRunId"); return; }
 
@@ -342,11 +360,16 @@ async function test_FA5(ompOk) {
 
 async function main() {
   console.log("Flow engine acceptance tests\n");
-  const a = doctor();
+  const a = await doctor();
   const ompOk = a.omp?.available === true;
   const codexOk = a.codex?.available === true;
   console.log(`omp:   ${ompOk ? "available" + (a.omp.version ? ` (${a.omp.version})` : "") : "NOT FOUND"}`);
   console.log(`codex: ${codexOk ? "available" + (a.codex.version ? ` (${a.codex.version})` : "") : "NOT FOUND"}`);
+
+  // omp 调用的 model 经 SYNOD_FLOW_MODEL 注入子进程(workflows 读它)。minimax 余额耗尽时
+  // 切 deepseek(用户运维指令);已设环境变量则尊重之,否则默认 deepseek/deepseek-v4-pro。
+  process.env.SYNOD_FLOW_MODEL = process.env.SYNOD_FLOW_MODEL || "deepseek/deepseek-v4-pro";
+  console.log(`flow model (omp): ${process.env.SYNOD_FLOW_MODEL}`);
 
   await test_FA1();
   await test_FA2(ompOk);

@@ -13,7 +13,8 @@ export const meta = {
 export async function run(ctx, input) {
   const draft = typeof input === "string" ? input : (input?.draft ?? "The sky is blue.");
 
-  const result = await reviseWithHuman(ctx, draft, { agent: "omp" });
+  // model 经 SYNOD_FLOW_MODEL 注入(minimax 余额不足时切 deepseek);reviseWithHuman 透传给内部 agent()。
+  const result = await reviseWithHuman(ctx, draft, { agent: "omp", model: process.env.SYNOD_FLOW_MODEL || undefined });
 
   return { final: result };
 }
