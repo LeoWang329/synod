@@ -34,6 +34,21 @@ function validateLayer(cfg, file) {
     if (!b || typeof b !== "object") fail(file, `backends.${name} must be an object`);
     if (b.type === "cli") {
       if (typeof b.bin !== "string" || !b.bin) fail(file, `backends.${name}: "bin" is required`);
+      if (b.args !== undefined && (!Array.isArray(b.args) || b.args.some((a) => typeof a !== "string"))) {
+        fail(file, `backends.${name}.args must be an array of strings`);
+      }
+      if (b.versionArgs !== undefined && (!Array.isArray(b.versionArgs) || b.versionArgs.some((a) => typeof a !== "string"))) {
+        fail(file, `backends.${name}.versionArgs must be an array of strings`);
+      }
+      if (b.promptVia !== undefined && b.promptVia !== "arg" && b.promptVia !== "stdin") {
+        fail(file, `backends.${name}.promptVia must be "arg" or "stdin", got "${b.promptVia}"`);
+      }
+      if (b.modelFlag !== undefined && (typeof b.modelFlag !== "string" || !b.modelFlag)) {
+        fail(file, `backends.${name}.modelFlag must be a non-empty string`);
+      }
+      if (b.timeoutMs !== undefined && (typeof b.timeoutMs !== "number" || !Number.isFinite(b.timeoutMs) || b.timeoutMs <= 0)) {
+        fail(file, `backends.${name}.timeoutMs must be a positive number`);
+      }
     } else if (b.type === "module") {
       if (typeof b.path !== "string" || !b.path) fail(file, `backends.${name}: "path" is required`);
     } else {

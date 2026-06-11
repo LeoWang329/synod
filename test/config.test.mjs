@@ -75,6 +75,48 @@ test("resolveProfile:profile → openBackend 参数(role→systemPrompt)", async
   assert.equal(resolveProfile(cfg, "ghost"), null);
 });
 
+test("type:cli 深度校验:坏 args/promptVia/timeoutMs → 抛带文件路径的错", async () => {
+  const a = makeDirs();
+  writeFileSync(join(a.cwd, "synod.config.mjs"),
+    `export default { backends: { b: { type: "cli", bin: "x", args: ["ok", 5] } } };`);
+  await assert.rejects(loadConfig({ cwd: a.cwd, home: a.home }), /backends\.b\.args.*array of strings.*synod\.config\.mjs/s);
+
+  const b = makeDirs();
+  writeFileSync(join(b.cwd, "synod.config.mjs"),
+    `export default { backends: { b: { type: "cli", bin: "x", promptVia: "env" } } };`);
+  await assert.rejects(loadConfig({ cwd: b.cwd, home: b.home }), /backends\.b\.promptVia.*"arg" or "stdin"/s);
+
+  const c = makeDirs();
+  writeFileSync(join(c.cwd, "synod.config.mjs"),
+    `export default { backends: { b: { type: "cli", bin: "x", timeoutMs: -1 } } };`);
+  await assert.rejects(loadConfig({ cwd: c.cwd, home: c.home }), /backends\.b\.timeoutMs.*positive number/s);
+});
+
+test("type:cli 合法可选字段 → 通过", async () => {
+  const { home, cwd } = makeDirs();
+  writeFileSync(join(cwd, "synod.config.mjs"),
+    `export default { backends: { good: { type: "cli", bin: "x", args: ["a", "b"], promptVia: "stdin", modelFlag: "--model", versionArgs: ["-v"], timeoutMs: 5000 } } };`);
+  const cfg = await loadConfig({ cwd, home });
+  assert.equal(cfg.backends.good.promptVia, "stdin");
+  assert.equal(cfg.backends.good.timeoutMs, 5000);
+});
+
+test("agent write/mesh 非 boolean → 抛错;defaults 浅合并(后层覆盖)", async () => {
+  const a = makeDirs();
+  writeFileSync(join(a.cwd, "synod.config.mjs"),
+    `export default { agents: { x: { backend: "omp", write: "yes" } } };`);
+  await assert.rejects(loadConfig({ cwd: a.cwd, home: a.home }), /agents\.x\.write must be a boolean/s);
+
+  const { home, cwd } = makeDirs();
+  writeFileSync(join(home, ".synod", "config.mjs"),
+    `export default { defaults: { model: "g", effort: "low" } };`);
+  writeFileSync(join(cwd, "synod.config.mjs"),
+    `export default { defaults: { model: "p" } };`);
+  const cfg = await loadConfig({ cwd, home });
+  assert.equal(cfg.defaults.model, "p", "项目层覆盖全局层");
+  assert.equal(cfg.defaults.effort, "low", "未覆盖的保留");
+});
+
 test("registerConfigBackends:type:cli 注册 generic 适配器;与内置同名拒绝", async () => {
   const cfg = {
     backends: {
