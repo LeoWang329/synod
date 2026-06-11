@@ -27,6 +27,7 @@ import { writeCheckpoint, isAwaitingHuman } from "./flow/checkpoint.mjs";
 import { openBackend } from "./backend.mjs";
 import { installShutdownHandlers, closeAllLiveSessionsSync } from "./shutdown.mjs";
 import { createRunWorkspace, scanResidualWorktrees } from "./run-workspace.mjs";
+import { createFlowView } from "./ui/flow-view.mjs";
 
 // ── CLI parsing ──────────────────────────────────────────────────────────
 
@@ -340,7 +341,9 @@ export async function main({
 
   // ── Progress sink ───────────────────────────────────────────────────
   const progressEnabled = args.progress || process.env.SYNOD_PROGRESS === "1";
-  const progressSink = progressEnabled ? createDefaultProgressSink(stdout) : undefined;
+  const baseSink = progressEnabled ? createDefaultProgressSink(stdout) : undefined;
+  const view = progressEnabled ? createFlowView({ stdout, name: args.name, clock: () => Date.now() }) : null;
+  const progressSink = view ? view.countingSink(baseSink) : baseSink;
 
   // per-run 目录由 logger 的 ensureRunDir 负责;不再在 cwd 建 artifacts。
   // SYNOD_HOME 对齐:cli.mjs --runs 也用 SYNOD_HOME,两者必须一致(A3)。
@@ -388,6 +391,7 @@ export async function main({
   await writeLatestPointer(runsRoot, ctx.runId).catch(() => {});
   // Write initial `running` checkpoint so the run is discoverable even after a hard kill
   try { writeCheckpoint(runsRoot, ctx.runId, { flowName: args.name, input: flowInput, cwd, status: "running" }); } catch { /* best-effort */ }
+  view?.banner();
   let result, runErr;
   try {
     result = await runFlow(runtime, flow, ctx, flowInput);
@@ -421,11 +425,14 @@ export async function main({
         worktrees: wtRecords,
       });
     } catch {}
+    view?.failed();
     stderr.write(`Error: flow "${args.name}" failed: ${runErr.message}\n`);
     return 1;
   }
   try { writeCheckpoint(runsRoot, ctx.runId, { status: "done", worktrees: wtRecords }); } catch {}
-  if (result !== undefined) {
+  if (view) {
+    view.result(result);
+  } else if (result !== undefined) {
     stdout.write(JSON.stringify(result, null, 2) + "\n");
   }
   return 0;
