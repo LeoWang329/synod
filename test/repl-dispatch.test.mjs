@@ -574,3 +574,59 @@ describe("dispatch has no side-effects beyond I/O", () => {
     // No sm/registry methods called
   });
 });
+
+// ── /open +<profile> (config-driven, Task 7) ───────────────────────────
+
+describe("dispatch /open +profile", () => {
+  it("/open +coder → 按 profile 解析后调 sm.open(内联 flag 覆盖 profile)", async () => {
+    const opens = [];
+    const sm = {
+      _sessions: new Map(),
+      open: async (o) => { opens.push(o); return "omp#1"; },
+    };
+    const config = {
+      agents: { coder: { backend: "omp", model: "m1", write: true, role: "你是 coder" } },
+    };
+    const dispatch = createReplDispatch({
+      sm, registry: { add() {} }, stdout: { write() {} }, stderr: { write() {} },
+      defaultAgent: "omp", config,
+    });
+    await dispatch("/open +coder", { source: "human" });
+    assert.equal(opens[0].agent, "omp");
+    assert.equal(opens[0].model, "m1");
+    assert.equal(opens[0].write, true);
+    assert.equal(opens[0].systemPrompt, "你是 coder");
+
+    await dispatch("/open +coder --model m2", { source: "human" });
+    assert.equal(opens[1].model, "m2", "内联 --model 覆盖 profile.model");
+  });
+
+  it("/open +ghost(未知 profile)→ stderr 报错,不开会话", async () => {
+    const errs = [];
+    const sm = { _sessions: new Map(), open: async () => { throw new Error("unreachable"); } };
+    const dispatch = createReplDispatch({
+      sm, registry: { add() {} }, stdout: { write() {} },
+      stderr: { write: (s) => errs.push(s) },
+      defaultAgent: "omp", config: { agents: {} },
+    });
+    const r = dispatch("/open +ghost", { source: "human" });
+    const res = r && typeof r.then === "function" ? await r : r;
+    assert.equal(res.redraw, true);
+    assert.match(errs.join(""), /unknown profile "ghost"/);
+  });
+
+  it("agent-fence /open +writer 被 allowWrite:false 护栏拦截(profile 不能绕过护栏)", async () => {
+    const sm = { _sessions: new Map(), open: async () => { throw new Error("unreachable"); } };
+    const config = {
+      agents: { writer: { backend: "omp", write: true, role: "writer" } },
+    };
+    const dispatch = createReplDispatch({
+      sm, registry: { add() {} }, stdout: { write() {} }, stderr: { write() {} },
+      defaultAgent: "omp", config,
+      guardrails: { allowWrite: false },
+    });
+    const res = await dispatch("/open +writer", { source: "agent-fence", depth: 0 });
+    assert.equal(res.ok, false);
+    assert.match(res.reason, /allowWrite is false/);
+  });
+});

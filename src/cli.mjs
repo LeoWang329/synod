@@ -17,6 +17,7 @@ import { backendNames } from "./backends/registry.mjs";
 import { createRelayRegistry } from "./relay.mjs";
 import { wireControl } from "./control-wire.mjs";
 import { createReplDispatch, parseOpenArgs } from "./repl-dispatch.mjs";
+import { loadConfig, registerConfigBackends } from "./config.mjs";
 import { main as flowMain } from "./flow.mjs";
 import { installShutdownHandlers, closeAllLiveSessionsSync } from "./shutdown.mjs";
 
@@ -303,6 +304,18 @@ async function main({
     return 0;
   }
 
+  // Load layered config (~/.synod/config.mjs + ./synod.config.mjs) and register
+  // its backends BEFORE doctor(), so config-declared backends are first-class
+  // (visible to doctor + --agent validation).  fail-fast on config errors.
+  let config;
+  try {
+    config = await loadConfig({ cwd: path.resolve(process.cwd()), home: env.SYNOD_HOME || undefined });
+    await registerConfigBackends(config);
+  } catch (err) {
+    stderr.write(`synod: ${err.message}\n`);
+    return 2;
+  }
+
   const report = doctor();
   const names = backendNames();
   if (!names.includes(args.agent)) {
@@ -376,6 +389,7 @@ async function main({
     defaultAgent: args.agent,
     guardrails: { maxSessions: 10, maxDepth: 3, allowWrite: false },
     runFlow,
+    config,
   });
 
   const { onTurnComplete: composedOnTurnComplete } = wireControl({

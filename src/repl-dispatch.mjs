@@ -36,12 +36,18 @@ import { parseRelay } from "./relay.mjs";
  * Moved from cli.mjs lines 139–171.
  *
  * @param {string[]} tokens — already-split arguments (e.g. ["--agent","codex","--model","mini"])
- * @returns {{ agent?:string, model?:string, effort?:string, write?:boolean, error?:string }}
+ * @returns {{ profile?:string, agent?:string, model?:string, effort?:string, write?:boolean, error?:string }}
  */
 export function parseOpenArgs(tokens) {
   const opts = {};
   for (let i = 0; i < tokens.length; i += 1) {
     const tok = tokens[i];
+    if (i === 0 && tok.startsWith("+")) {
+      const name = tok.slice(1);
+      if (!name) return { error: "usage: /open +<profile> [overrides]" };
+      opts.profile = name;
+      continue;
+    }
     switch (tok) {
       case "--agent":
       case "--model":
@@ -130,9 +136,11 @@ function guardOpen({ agent, model, write }, depth, sm, g) {
  * @param {(argv: string[]) => Promise<number>} [deps.runFlow] — flow-engine
  *   entry (flow.mjs main bound to this REPL's streams/backend/cwd).  Human-only;
  *   used by the /flow command.  If omitted, /flow reports it is unavailable.
+ * @param {{ agents?: object }} [deps.config] — loaded synod config; agents map
+ *   named profiles for `/open +<profile>`.  Defaults to no profiles.
  * @returns {function}
  */
-export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent, guardrails, runFlow }) {
+export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent, guardrails, runFlow, config = { agents: {} } }) {
   const g = {
     maxSessions: Infinity,
     maxDepth: Infinity,
@@ -141,6 +149,26 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
     allowWrite: false,
     ...guardrails,
   };
+
+  // Resolve a parsed /open opts object: if it names a +profile, look the profile
+  // up in config.agents and merge (inline flags win over profile fields).  The
+  // returned opts are what guardrails + sm.open see — so a profile cannot bypass
+  // allowWrite/allowedAgents/allowedModels (the caller guards the RESOLVED opts).
+  function resolveOpenOpts(opts) {
+    if (!opts.profile) return { opts };
+    const p = config?.agents?.[opts.profile];
+    if (!p) return { error: `unknown profile "${opts.profile}"` };
+    return {
+      opts: {
+        agent: opts.agent ?? p.backend,
+        model: opts.model ?? p.model,
+        effort: opts.effort ?? p.effort,
+        write: opts.write ?? p.write,
+        mesh: opts.mesh ?? p.mesh,
+        systemPrompt: p.role,
+      },
+    };
+  }
 
   const _runFlow = runFlow || (async () => {
     stderr.write("flow runner not available\n");
@@ -270,21 +298,26 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
     }
 
     if (cmd === "/open") {
-      const opts = parseOpenArgs(rest);
-      if (opts.error) {
-        stderr.write(`${opts.error}\n`);
+      const parsed = parseOpenArgs(rest);
+      if (parsed.error) {
+        stderr.write(`${parsed.error}\n`);
         return { redraw: true };
       }
-
-      const agent = opts.agent || defaultAgent;
+      const resolved = resolveOpenOpts(parsed);
+      if (resolved.error) {
+        stderr.write(`${resolved.error}\n`);
+        return { redraw: true };
+      }
+      const o = resolved.opts;
 
       // Only async path in human mode.
       return sm.open({
-        agent,
-        model: opts.model,
-        effort: opts.effort,
-        write: opts.write,
-        mesh: opts.mesh, // undefined → sm falls back to session default
+        agent: o.agent || defaultAgent,
+        model: o.model,
+        effort: o.effort,
+        write: o.write,
+        mesh: o.mesh, // undefined → sm falls back to session default
+        systemPrompt: o.systemPrompt,
         announce: "interactive",
       }).then(() => ({ redraw: true }));
     }
@@ -320,16 +353,22 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
       const [cmd, ...rest] = line.split(/\s+/);
 
       if (cmd === "/open") {
-        const opts = parseOpenArgs(rest);
-        if (opts.error) {
-          return { ok: false, reason: opts.error };
+        const parsed = parseOpenArgs(rest);
+        if (parsed.error) {
+          return { ok: false, reason: parsed.error };
         }
+        const resolved = resolveOpenOpts(parsed);
+        if (resolved.error) {
+          return { ok: false, reason: resolved.error };
+        }
+        const o = resolved.opts;
 
-        const agent = opts.agent || defaultAgent;
+        const agent = o.agent || defaultAgent;
 
-        // Guardrails check
+        // Guardrails check the RESOLVED opts — a profile with write:true must be
+        // rejected when allowWrite:false (a profile cannot bypass the fence).
         const guardErr = guardOpen(
-          { agent, model: opts.model, write: opts.write },
+          { agent, model: o.model, write: o.write },
           depth, sm, g,
         );
         if (guardErr) {
@@ -345,10 +384,11 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
         // Only async path in agent-fence mode.
         return sm.open({
           agent,
-          model: opts.model,
-          effort: opts.effort,
-          write: opts.write,
-          mesh: opts.mesh, // undefined → sm falls back to session default
+          model: o.model,
+          effort: o.effort,
+          write: o.write,
+          mesh: o.mesh, // undefined → sm falls back to session default
+          systemPrompt: o.systemPrompt,
           announce: false,
         }).then((label) => {
           if (!label) {
