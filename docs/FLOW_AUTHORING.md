@@ -147,3 +147,73 @@ export async function run(ctx, input) {
 - [ ] 回退是"把反馈喂回 agent",不是回滚世界。
 - [ ] 没有 `process.exit` / `SIGINT`;中途退出走 `approve` 的 `aborted`。
 - [ ] 同 `input` 跑两次,节点序列一致(确定性)。
+
+## 8. resume / headless / worktree(进阶)
+
+这三件事让 flow 能在中断后续跑、在无人值守环境安全停等、并让多个 write agent 并行
+改同一仓库不互相踩。你**不需要**改 flow 写法就能用,但理解约束能少踩坑。
+
+### 8.1 resume:中断后从断点续跑
+
+每次 `node src/cli.mjs --task` / `/flow` / `synod resume` 跑 flow,引擎都把每个原语
+调用(agent / agentLoop / bash / approve)的输入与输出记进 `~/.synod/runs/<runId>/run.log.jsonl`,
+并给每个 step 打一个**确定性 key** = `<调用序号>:<节点名>:<输入hash前8位>`。
+
+run 被 kill 或失败后:
+
+    synod resume <runId>        # 命令行
+    /resume <runId>             # REPL 内
+
+引擎重读日志:**前缀匹配的 step 直接回放上次的输出(不再开 agent、不再跑 bash)**,
+从第一个 key 对不上的 step 起全部真跑。`synod runs` 列出可恢复的 run 与状态
+(done / failed@<节点> / awaiting-approval)。
+
+> **硬约束(确定性):** resume 的前缀匹配要求 flow 的**控制流确定**——同样的输入
+> 必须走同样的原语调用顺序、同样的 prompt/命令。**绝不要用 `Date.now()` /
+> `Math.random()` / 读时钟 / 读随机文件来决定走哪个分支或拼 prompt**,否则 resume
+> 时算出的 key 与上次不同 → 前缀失配 → 从那里起全部真跑(不会出错,但白白重跑、
+> 也可能重复副作用)。需要"当前时间/随机数"作为**数据**(不影响控制流)时没问题;
+> 只是别让它决定**做什么**。
+
+> **诚实限制(已确认接受):** agent 会话的 LLM 对话上下文活在 agent 进程里,**不可
+> 恢复**。resume 能恢复的是**已完成 step 的结果 + 纯数据 ctx**;复用型会话(reuse)
+> 重开后是全新会话,靠你 prompt 里带的全量上下文兜底——这正是"reuse = 优化而非
+> 依赖"的既有设计(每轮 prompt 自带全文,见 §5 标准模式)。
+
+> **并发流的 resume 是尽力而为:** `Promise.all([...])` 里多个原语的完成顺序不确定,
+> resume 时序可能对不上 → 整段真跑(不损坏,只是不省)。顺序流(一个接一个 await)
+> 的 resume 是强保证。
+
+### 8.2 headless:无人值守遇 approve 不挂死
+
+当 `!stdin.isTTY`(管道 / CI / cron)或显式 `--headless` 时,`approve()` /
+`reviseWithHuman()` **不等 stdin**:把待审内容完整打到 stdout、写断点
+(`checkpoint.json`)、以**退出码 5(awaiting human)** 退出。人回来在 TTY 下
+`synod resume <runId>`,那个 approve 节点正常提问续答。CI 里"永久等 stdin 挂死"
+就此消灭。
+
+你的 flow **照常写** `await approve(ctx, { content })` 即可——headless 行为是引擎兜的,
+不用你判断环境。
+
+### 8.3 worktree:多 write agent 并行改同一仓库不踩
+
+要让两个(或更多)write agent **并行**改同一个 git 仓库而不互相踩,给每个 agent 一个
+**workspace 名**:
+
+    await Promise.all([
+      agent(ctx, { agent: "omp", write: true, workspace: "frontend", prompt: "..." }),
+      agent(ctx, { agent: "omp", write: true, workspace: "backend",  prompt: "..." }),
+    ]);
+
+引擎为每个 workspace 名建一个 **git worktree** + 分支 `synod/<runId>/<name>`,该 agent
+的 cwd 指向自己的 worktree——彼此隔离。run 结束时引擎**逐分支尝试合回起始分支**:
+能干净合并的自动合并 + 清掉 worktree/分支;**有冲突的保留 worktree 与分支,在摘要里
+打印清单(分支 / 冲突文件 / 路径)留你处理**。顺利路径零人工,出错路径不丢任何工作。
+
+规则:
+- **同名 workspace 复用同一 worktree**(多次调用累积在一个隔离区);不同名 = 独立隔离区。
+- **只读 agent(不传 workspace)用主 cwd,零开销**——不建 worktree。
+- **非 git 目录**用 `write + workspace` 会被**直接拒绝**(报错建议 `git init` 或串行)。
+  单写者(不传 workspace)不受影响。
+- 崩溃残留:`synod runs` 可见 worktree 计数;启动时 synod 会 `git worktree prune` 并提示
+  残留路径(只提示不替你删)。
