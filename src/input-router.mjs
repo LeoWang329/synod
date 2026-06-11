@@ -7,11 +7,13 @@
 // 转发 rl 'SIGINT'(P1-28 的退出矩阵接回此处)。
 import readline from "node:readline";
 
-export function createInputRouter({ stdin, stdout }) {
+export function createInputRouter({ stdin, stdout, completer, history }) {
   const rl = readline.createInterface({
     input: stdin,
     output: stdout,
     terminal: stdin.isTTY ?? false,
+    ...(completer ? { completer } : {}),
+    ...(history ? { history } : {}),
   });
 
   let _lineHandler = null;     // 默认路由

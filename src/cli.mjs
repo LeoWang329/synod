@@ -26,6 +26,9 @@ import { renderPrompt } from "./ui/prompt.mjs";
 import { relayBanner } from "./ui/decorations.mjs";
 import { installShutdownHandlers, closeAllLiveSessionsSync, gracefulShutdown } from "./shutdown.mjs";
 import { scanResidualWorktrees } from "./run-workspace.mjs";
+import { discoverFlows } from "./flow/loader.mjs";
+import { makeCompleter } from "./ui/completer.mjs";
+import { loadHistory, appendHistory, historyPath } from "./ui/history.mjs";
 
 // ── CLI parsing ──────────────────────────────────────────────────────
 function parseArgs(argv) {
@@ -399,7 +402,15 @@ async function main({
   // (resumed below, after sm.open).
   let _exiting = false;     // /exit requested or graceful SIGINT in progress
   let _closed = false;      // rl 'close' fired (onClose ran) — guards stray prompts
-  const router = createInputRouter({ stdin, stdout });
+
+  // ── Tab completer + history (晚绑定 proxy + TTY-only history) ─────────────
+  let _completer = null;
+  const completerProxy = (line) => (_completer ? _completer(line) : [[], line]);
+  const _home = env.SYNOD_HOME || os.homedir();
+  const _histFile = stdin.isTTY ? historyPath(_home) : null;
+  const _history = _histFile ? loadHistory(_histFile) : undefined;
+
+  const router = createInputRouter({ stdin, stdout, completer: completerProxy, history: _history });
   router.pause();
   // Prompt redraw, guarded so no stray "> " is written after exit/close
   // (mirrors the old createRepl writePrompt guard).
@@ -440,6 +451,14 @@ async function main({
   // strike) cancels active flows cooperatively.  The flow io is the shared
   // router: approve()/question() claim the next human line (P1-8).
   const flowsRoot = workflowsRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "workflows");
+
+  // ── 晚绑定 completer:sm 已建、flowsRoot 已知 → 发现 flow 名单后激活 ────────
+  {
+    let _flowList = [];
+    try { _flowList = (await discoverFlows(flowsRoot)).flows ?? []; } catch { _flowList = []; }
+    _completer = makeCompleter({ sm, config, flows: _flowList, backendNames });
+  }
+
   const _pendingFlows = new Set();
   const _activeFlows = new Set();   // { ctrl } — Ctrl-C first strike aborts these
   let _flowAbortRequested = false;  // set on first flow-abort strike; cleared when flows drain
@@ -571,6 +590,7 @@ async function main({
     if (_exiting) return;
     const text = line.trim();
     if (!text) { writePrompt(); return; }
+    if (_histFile) appendHistory(_histFile, text);
     const r = dispatch(text, { source: "human" });
     if (r && typeof r.then === "function") {
       r.then((res) => { if (res.redraw) writePrompt(); });
