@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline";
 import { createCtx } from "./ctx.mjs";
 import { createApprove } from "./api/approve.mjs";
-import { createLogger } from "./logger.mjs";
+import { createLogger, shortHash } from "./logger.mjs";
 import { createAgent } from "./api/agent.mjs";
 import { createAgentLoop } from "./api/agentLoop.mjs";
 import { backtrack } from "./api/backtrack.mjs";
@@ -109,7 +109,7 @@ function defaultIo() {
  */
 export function createRuntime({
   fs, clock, openBackend, io, progress, config, signal,
-  workflowsRoot, maxDepth, maxActiveSubRuns, runsRoot,
+  workflowsRoot, maxDepth, maxActiveSubRuns, runsRoot, replay,
 } = {}) {
   const resolvedIo = io ?? defaultIo();
   const logger = createLogger({ fs, clock, runsRoot });
@@ -133,6 +133,9 @@ export function createRuntime({
         disposed: false,        // disposeRun 后立此标记,防复活(P1-7)
         lastSinkError: null,
         controller,
+        replay: (replay && replay.runId === runId)
+          ? { steps: replay.steps ?? [], cursor: 0, active: (replay.steps ?? []).length > 0 }
+          : null,
       };
       _runs.set(runId, rs);
     }
@@ -143,6 +146,25 @@ export function createRuntime({
   function signalFor(runId) { return getRunState(runId).controller.signal; }
   /** 主动 abort 一个 run(Ctrl-C 第一击 / dispose 前)。 */
   function abortRun(ctx) { getRunState(ctx.runId).controller.abort(); }
+
+  /**
+   * replayStep(runId, { node, input }) — resume 前缀匹配(§4.12-1)。
+   * 命中(node+hash 与游标处 step 相等)→ 回放 logged 输出并推进游标;
+   * 失配 → 永久停用本 run 的重放(此后全部真跑)。无计划恒 miss。
+   */
+  function replayStep(runId, { node, input }) {
+    const rs = getRunState(runId);
+    const plan = rs.replay;
+    if (!plan || !plan.active) return { hit: false };
+    const expected = plan.steps[plan.cursor];
+    if (!expected) { plan.active = false; return { hit: false }; }
+    if (expected.node === node && expected.hash === shortHash(input)) {
+      plan.cursor += 1;
+      return { hit: true, output: expected.output, entry: expected.entry, type: expected.type };
+    }
+    plan.active = false;
+    return { hit: false };
+  }
 
   function removeReusedSession(runId, key) {
     const rs = _runs.get(runId);
@@ -157,9 +179,10 @@ export function createRuntime({
     progress,
     config,
     getSignal: signalFor,
+    getReplay: replayStep,
   });
 
-  const bash = createBash({ logger, getSignal: signalFor });
+  const bash = createBash({ logger, getSignal: signalFor, getReplay: replayStep });
 
   const agentLoop = createAgentLoop({
     openBackend: resolvedOpenBackend,
@@ -167,9 +190,10 @@ export function createRuntime({
     config,
     progress,
     getSignal: signalFor,
+    getReplay: replayStep,
   });
 
-  const approve = createApprove({ io: resolvedIo, logger, getSignal: signalFor });
+  const approve = createApprove({ io: resolvedIo, logger, getSignal: signalFor, getReplay: replayStep });
 
   const reviseWithHuman = createReviseWithHuman({
     agent,
@@ -217,8 +241,8 @@ export function createRuntime({
      * @param {object} [opts]
      * @param {string} [opts.cwd] – working directory (default: process.cwd())
      */
-    createCtx(input, { cwd } = {}) {
-      return createCtx({ input, cwd });
+    createCtx(input, { cwd, runId } = {}) {
+      return createCtx({ input, cwd, runId });
     },
     /** agent() primitive — call a backend, return text. */
     agent,
@@ -240,6 +264,8 @@ export function createRuntime({
     abortRun,
     /** Escape hatch for tests: return the per-run state map entry. */
     _getRunState: getRunState,
+    /** Escape hatch for resume tests. */
+    _replayStep: replayStep,
     /** Logger instance bound to the injected sinks. */
     logger,
     /** Filesystem sink (injected or undefined). */

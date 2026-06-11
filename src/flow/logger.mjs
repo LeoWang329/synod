@@ -1,6 +1,18 @@
 import { randomUUID, createHash } from "node:crypto";
 
 /**
+ * shortHash(s) — 确定性 step key 的输入 hash 段(sha1 前 8 位)。
+ * 1C-b resume 的 replayStep 复用同一算法对账,故由 createLogger 闭包提升为
+ * 模块级导出(实现一字不改,仅作用域提升)。
+ */
+export function shortHash(s) {
+  return createHash("sha1")
+    .update(typeof s === "string" ? s : JSON.stringify(s ?? ""))
+    .digest("hex")
+    .slice(0, 8);
+}
+
+/**
  * Characters threshold above which `output` (and `input`) are diverted to
  * artifact files rather than being inlined in the JSONL log line.
  *
@@ -59,9 +71,6 @@ export function createLogger({ fs, clock, runsRoot }) {
   }
   // 1C-b resume 对账依据:<seq>:<node>:<inputHash8>。seq 在 step:started 时分配
   // (调用发起序),node 与输入 hash 让 resume 能前缀匹配回放 logged 输出。
-  function shortHash(s) {
-    return createHash("sha1").update(typeof s === "string" ? s : JSON.stringify(s ?? "")).digest("hex").slice(0, 8);
-  }
   function nextSeq(runId) {
     const n = _seqByRun.get(runId) ?? 0;
     _seqByRun.set(runId, n + 1);
