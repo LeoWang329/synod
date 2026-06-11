@@ -290,6 +290,23 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
     }
   }
 
+  /** Close one session by label: flush, kill, drop, reassign current. */
+  function close(label) {
+    const info = _sessions.get(label);
+    if (!info) {
+      stderr.write(`No session "${label}"\n${NO_SESSION_HINT}`);
+      return false;
+    }
+    info.lineBuf.flush();
+    try { info.session.close(); } catch {}
+    _sessions.delete(label);
+    if (_currentLabel === label) {
+      const remaining = [..._sessions.keys()];
+      _currentLabel = remaining.length ? remaining[remaining.length - 1] : null;
+    }
+    return true;
+  }
+
   /** Close all sessions. */
   function closeAll() {
     for (const [, info] of _sessions) {
@@ -307,6 +324,7 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
     enqueue,
     use,
     list,
+    close,
     drainAll,
     flushAll,
     closeAll,

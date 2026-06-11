@@ -199,6 +199,32 @@ describe("wireControl depth map", () => {
     // dispatch returned {ok:false}, wire should log warning
     assert.ok(stderr.buf.includes("[control warn]"), `stderr: ${stderr.buf}`);
   });
+
+  it("dropLabel 清 _depthMap → 该 label 再产 fence 时 depth 归 0(P2-25)", async () => {
+    const sm = fakeSm({ _sessions: [["omp#1", {}], ["codex#1", {}]] });
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch({
+      "/open --agent codex|0": { ok: true, label: "codex#1" },
+      "/open --agent omp|1": { ok: true, label: "omp#2" },
+      "/open --agent omp|0": { ok: true, label: "omp#3" },
+    });
+    const { onTurnComplete, dropLabel } = wireControl({ sm, registry, stderr, dispatch });
+
+    await onTurnComplete("omp#1", { text: "```synod\n/open --agent codex\n```" });
+    await new Promise((r) => setImmediate(r));
+    dispatch.calls.length = 0;
+
+    await onTurnComplete("codex#1", { text: "```synod\n/open --agent omp\n```" });
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(dispatch.calls[0].depth, 1, "清理前 codex#1 = depth1");
+
+    dropLabel("codex#1");
+    dispatch.calls.length = 0;
+    await onTurnComplete("codex#1", { text: "```synod\n/open --agent omp\n```" });
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(dispatch.calls[0].depth, 0, "dropLabel 后 codex#1 回到 depth0(P2-25)");
+  });
 });
 
 describe("wireControl relay+control compositing", () => {

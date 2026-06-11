@@ -85,5 +85,10 @@ export function wireControl({ sm, registry, stderr, dispatch }) {
     while (_inflight.size) await Promise.allSettled([..._inflight]);
   }
 
-  return { onTurnComplete, drainControl };
+  return {
+    onTurnComplete,
+    drainControl,
+    /** P2-25:会话 /close 时清其 depth 记录。 */
+    dropLabel(label) { _depthMap.delete(label); },
+  };
 }

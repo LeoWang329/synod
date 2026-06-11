@@ -496,6 +496,7 @@ async function main({
   };
 
   // ── REPL dispatch (created before wireControl so it can be passed in) ──
+  let _dropDepth = () => {};
   const dispatch = createReplDispatch({
     sm, registry, stdout, stderr,
     defaultAgent: args.agent,
@@ -503,11 +504,14 @@ async function main({
     runFlow,
     resumeFlow,
     config,
+    onCloseLabel: (label) => _dropDepth(label),
+    flowStatus: () => (_pendingFlows.size > 0 ? `${_pendingFlows.size} running` : "none"),
   });
 
-  const { onTurnComplete: composedOnTurnComplete, drainControl } = wireControl({
+  const { onTurnComplete: composedOnTurnComplete, drainControl, dropLabel } = wireControl({
     sm, registry, stderr, dispatch,
   });
+  _dropDepth = dropLabel;
   _composedOnTurnComplete = composedOnTurnComplete;
 
   // ── onClose: drain in-flight work, then tear down all sessions ─────────

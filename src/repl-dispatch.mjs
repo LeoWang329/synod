@@ -143,7 +143,7 @@ function guardOpen({ agent, model, write }, depth, sm, g) {
  *   named profiles for `/open +<profile>`.  Defaults to no profiles.
  * @returns {function}
  */
-export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent, guardrails, runFlow, resumeFlow, config = { agents: {} } }) {
+export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent, guardrails, runFlow, resumeFlow, config = { agents: {} }, onCloseLabel = () => {}, flowStatus = () => "none" }) {
   const g = {
     maxSessions: Infinity,
     maxDepth: Infinity,
@@ -301,6 +301,33 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
         const switched = sm.use(target);
         if (switched) stdout.write(`Switched to ${target}\n`);
       }
+      return { redraw: true };
+    }
+
+    if (cmd === "/close") {
+      const target = rest[0];
+      if (!target) {
+        stderr.write("Usage: /close <label>\n");
+        return { redraw: true };
+      }
+      if (sm.close(target)) {
+        registry.removeForLabel(target);
+        onCloseLabel(target);
+        stdout.write(`Closed ${target}\n`);
+      }
+      return { redraw: true };
+    }
+
+    if (cmd === "/status") {
+      let running = 0;
+      for (const [, info] of sm._sessions) {
+        if (info.session && info.session.status === "running") running += 1;
+      }
+      const relays = registry.list ? registry.list().length : 0;
+      stdout.write(
+        `sessions: ${sm._sessions.size} (${running} running) · relays: ${relays} · ` +
+        `current: ${sm.currentLabel ?? "(none)"} · flow: ${flowStatus()}\n`,
+      );
       return { redraw: true };
     }
 
