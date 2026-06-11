@@ -49,7 +49,7 @@
 
 const ACCEPT_WORDS = new Set(["accept", "y", "yes", "ok", "approve"]);
 
-export function createApprove({ io, logger, getSignal }) {
+export function createApprove({ io, logger, getSignal, getReplay }) {
   /**
    * approve(ctx, opts) — present content to a human, wait for decision.
    *
@@ -69,6 +69,15 @@ export function createApprove({ io, logger, getSignal }) {
       content,
       prompt = "(accept / feedback / /abort): ",
     } = opts;
+
+    // ── resume 重放(§4.12-1):命中按 logged 决定重建结果,不重新呈现/不重新问 ──
+    const rep = getReplay?.(ctx.runId, { node: "approve", input: content != null ? String(content) : "" });
+    if (rep?.hit) {
+      if (rep.entry?.aborted) return { aborted: true };
+      if (rep.entry?.accepted) return { accepted: true };
+      return { accepted: false, feedback: rep.output ?? "" };
+    }
+
     const signal = opts.signal ?? getSignal?.(ctx.runId);   // §4.7-3: run-level fallback
 
     // ── Present content ────────────────────────────────────────────

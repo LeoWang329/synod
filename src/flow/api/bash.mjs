@@ -8,7 +8,7 @@ const execAsync = promisify(exec);
  *
  * Accepts injected logger so the primitive can write step log entries.
  */
-export function createBash({ logger, getSignal }) {
+export function createBash({ logger, getSignal, getReplay }) {
   /**
    * bash(ctx, cmd, { cwd?, signal? }) — run a shell command.
    *
@@ -28,6 +28,16 @@ export function createBash({ logger, getSignal }) {
    * @returns {Promise<{stdout:string, stderr:string, code:number}>}
    */
   async function bash(ctx, cmd, { cwd, signal } = {}) {
+    // ── resume 重放(§4.12-1):命中回放 logged 结果,绝不 exec ──
+    const rep = getReplay?.(ctx.runId, { node: "bash", input: cmd });
+    if (rep?.hit) {
+      return {
+        stdout: (rep.output ?? "").trimEnd(),
+        stderr: rep.entry?.stderr ?? "",
+        code: typeof rep.entry?.code === "number" ? rep.entry.code : 0,
+      };
+    }
+
     const sig = signal ?? getSignal?.(ctx.runId);
 
     // ── 1. Execute the command ─────────────────────────────────────
