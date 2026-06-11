@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { createRuntime } from "./flow/runtime.mjs";
 import { discoverFlows, loadFlow } from "./flow/loader.mjs";
 import { runFlow } from "./flow/runner.mjs";
+import { writeCheckpoint, isAwaitingHuman } from "./flow/checkpoint.mjs";
 import { openBackend } from "./backend.mjs";
 import { installShutdownHandlers, closeAllLiveSessionsSync } from "./shutdown.mjs";
 
@@ -45,6 +46,7 @@ export function parseFlowArgs(argv) {
   const out = {
     list: false,
     progress: false,
+    headless: false,
     name: null,
     input: null,
     workflowsRoot: null,
@@ -60,6 +62,9 @@ export function parseFlowArgs(argv) {
         break;
       case "--progress":
         out.progress = true;
+        break;
+      case "--headless":
+        out.headless = true;
         break;
       case "--workflows": {
         const v = argv[++i];
@@ -249,8 +254,12 @@ export async function main({
   // Inject real fs by default; tests pass a noop/in-memory sink
   fs: realFs = { writeFile, appendFile, mkdir },
   runsRoot: runsRootOpt,
+  // resume: { runId, input, steps } — injected by `synod resume` / REPL /resume
+  resume,
+  headless: injectedHeadless,
 } = {}) {
   const args = parseFlowArgs(argv);
+  const headless = injectedHeadless ?? args.headless;
 
   if (args._error) {
     stderr.write(`Error: ${args._error}\n`);
@@ -324,7 +333,7 @@ export async function main({
     return 2;
   }
 
-  const input = parseInput(args.input);
+  const flowInput = resume ? resume.input : parseInput(args.input);
 
   // ── Progress sink ───────────────────────────────────────────────────
   const progressEnabled = args.progress || process.env.SYNOD_PROGRESS === "1";
@@ -347,6 +356,8 @@ export async function main({
       io: injectedIo,             // REPL injects the shared router io; standalone → defaultIo()
       signal: externalSignal,     // CLI Ctrl-C link; standalone → undefined
       runsRoot,
+      headless,
+      replay: resume ? { runId: resume.runId, steps: resume.steps } : undefined,
     });
   } catch (err) {
     stderr.write(`Error: failed to create runtime: ${err.message}\n`);
@@ -366,15 +377,24 @@ export async function main({
   }
 
   // Create context and run
-  const ctx = runtime.createCtx(input, { cwd });
+  const ctx = runtime.createCtx(flowInput, { cwd, runId: resume?.runId });
   await writeLatestPointer(runsRoot, ctx.runId).catch(() => {});
+  // Write initial `running` checkpoint so the run is discoverable even after a hard kill
+  try { writeCheckpoint(runsRoot, ctx.runId, { flowName: args.name, input: flowInput, cwd, status: "running" }); } catch { /* best-effort */ }
   try {
-    const result = await runFlow(runtime, flow, ctx, input);
+    const result = await runFlow(runtime, flow, ctx, flowInput);
     if (result !== undefined) {
       stdout.write(JSON.stringify(result, null, 2) + "\n");
     }
+    try { writeCheckpoint(runsRoot, ctx.runId, { status: "done" }); } catch { /* best-effort */ }
     return 0;
   } catch (err) {
+    if (isAwaitingHuman(err)) {
+      try { writeCheckpoint(runsRoot, ctx.runId, { status: "awaiting_human" }); } catch { /* best-effort */ }
+      stderr.write(`Error: flow "${args.name}" is awaiting human input\n`);
+      return 5;
+    }
+    try { writeCheckpoint(runsRoot, ctx.runId, { status: "failed", failedAt: err.message }); } catch { /* best-effort */ }
     stderr.write(`Error: flow "${args.name}" failed: ${err.message}\n`);
     return 1;
   }

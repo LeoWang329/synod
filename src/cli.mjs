@@ -19,6 +19,7 @@ import { wireControl } from "./control-wire.mjs";
 import { createReplDispatch, parseOpenArgs } from "./repl-dispatch.mjs";
 import { loadConfig, registerConfigBackends } from "./config.mjs";
 import { main as flowMain } from "./flow.mjs";
+import { prepareResume } from "./flow/replay.mjs";
 import { createInputRouter } from "./input-router.mjs";
 import { installShutdownHandlers, closeAllLiveSessionsSync, gracefulShutdown } from "./shutdown.mjs";
 
@@ -170,6 +171,7 @@ function printHelp(stdout = process.stdout) {
       "  /unrelay <from>-><to> Remove a relay rule",
       "  /relays               List active relay rules",
       "  /flow [<name> [input]] Run a workflow (omit name to list available)",
+      "  /resume <runId>       Resume a previously failed/interrupted flow run",
       "  /exit, /quit          Close all sessions and quit",
       "  Ctrl-D (EOF)          Same as /exit",
       "",
@@ -248,6 +250,27 @@ async function runTasks(tasks, report, baseOpts, { openBackend, stdout = process
   }
 }
 
+// ── resume subcommand ─────────────────────────────────────────────────
+async function resumeCommand(runId, { openBackend, stdout, stderr, workflowsRoot, env }) {
+  const runsRoot = path.resolve(env.SYNOD_HOME || os.homedir(), ".synod", "runs");
+  let r;
+  try {
+    r = await prepareResume(runsRoot, runId);
+  } catch (err) {
+    stderr.write(`synod resume: ${err.message}\n`);
+    return 1;
+  }
+  const flowsRoot = workflowsRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "workflows");
+  return flowMain({
+    argv: [r.flowName],
+    stdout, stderr, openBackend,
+    workflowsRoot: flowsRoot,
+    cwd: r.cwd,
+    runsRoot,
+    resume: { runId: r.runId, input: r.input, steps: r.steps },
+  });
+}
+
 // ── Main ─────────────────────────────────────────────────────────────
 async function main({
   openBackend = realOpenBackend,
@@ -260,7 +283,19 @@ async function main({
   // injectable so integration tests can point it at a temp project dir.
   workflowsRoot,
 } = {}) {
-  const args = parseArgs(argv.slice(2));
+  const rawArgv = argv.slice(2);
+
+  // ── synod resume <runId> ───────────────────────────────────────────
+  if (rawArgv[0] === "resume") {
+    const runId = rawArgv[1];
+    if (!runId) {
+      stderr.write("usage: synod resume <runId>\n");
+      return 2;
+    }
+    return resumeCommand(runId, { openBackend, stdout, stderr, workflowsRoot, env });
+  }
+
+  const args = parseArgs(rawArgv);
   if (args._help) {
     printHelp(stdout);
     return 0;
@@ -406,12 +441,42 @@ async function main({
     return p;
   };
 
+  const resumeFlow = async (runId) => {
+    const runsRoot = path.resolve(env.SYNOD_HOME || os.homedir(), ".synod", "runs");
+    let r;
+    try {
+      r = await prepareResume(runsRoot, runId);
+    } catch (err) {
+      stderr.write(`/resume: ${err.message}\n`);
+      return;
+    }
+    const ctrl = new AbortController();
+    const handle = { ctrl };
+    _activeFlows.add(handle);
+    const p = flowMain({
+      argv: [r.flowName],
+      stdout, stderr, openBackend,
+      workflowsRoot: flowsRoot, cwd: r.cwd, config,
+      io: flowIo, signal: ctrl.signal,
+      runsRoot,
+      resume: { runId: r.runId, input: r.input, steps: r.steps },
+    });
+    _pendingFlows.add(p);
+    p.finally(() => {
+      _pendingFlows.delete(p);
+      _activeFlows.delete(handle);
+      if (_activeFlows.size === 0) _flowAbortRequested = false;
+    }).catch(() => {});
+    return p;
+  };
+
   // ── REPL dispatch (created before wireControl so it can be passed in) ──
   const dispatch = createReplDispatch({
     sm, registry, stdout, stderr,
     defaultAgent: args.agent,
     guardrails: { maxSessions: 10, maxDepth: 3, allowWrite: false },
     runFlow,
+    resumeFlow,
     config,
   });
 

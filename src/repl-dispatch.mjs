@@ -141,7 +141,7 @@ function guardOpen({ agent, model, write }, depth, sm, g) {
  *   named profiles for `/open +<profile>`.  Defaults to no profiles.
  * @returns {function}
  */
-export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent, guardrails, runFlow, config = { agents: {} } }) {
+export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent, guardrails, runFlow, resumeFlow, config = { agents: {} } }) {
   const g = {
     maxSessions: Infinity,
     maxDepth: Infinity,
@@ -174,6 +174,10 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
   const _runFlow = runFlow || (async () => {
     stderr.write("flow runner not available\n");
     return 1;
+  });
+
+  const _resumeFlow = resumeFlow || (async () => {
+    stderr.write("resume unavailable in this context\n");
   });
 
   /**
@@ -339,6 +343,16 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
       stdout.write(`Running flow "${name}"...\n`);
       // flow.mjs main() prints the JSON result / errors to our streams itself.
       return _runFlow(argv).then(() => ({ redraw: true }), () => ({ redraw: true }));
+    }
+
+    if (cmd === "/resume") {
+      const runId = line.slice(cmd.length).trim();
+      if (!runId) {
+        stderr.write("usage: /resume <runId>\n");
+        return { redraw: true };
+      }
+      stdout.write(`Resuming run "${runId}"...\n`);
+      return _resumeFlow(runId).then(() => ({ redraw: true }), () => ({ redraw: true }));
     }
 
     // Unknown / command

@@ -6,7 +6,7 @@
 // 3. stdout/stderr output is written to the injected streams
 // 4. Edge cases: missing labels, parse errors, registry.add throws, enqueue returns false
 
-import { describe, it } from "node:test";
+import { describe, it, test } from "node:test";
 import assert from "node:assert";
 import { createReplDispatch, parseOpenArgs } from "../src/repl-dispatch.mjs";
 
@@ -645,4 +645,33 @@ it("P1-9 fence /open 经 setCurrent:false 调 sm.open", async () => {
   const r = await dispatch("/open --agent omp", { source: "agent-fence", depth: 0 });
   assert.equal(r.ok, true);
   assert.equal(opens[0].setCurrent, false, "fence /open 必须 setCurrent:false(P1-9)");
+});
+
+test("/resume <runId> 调 resumeFlow", async () => {
+  const seen = [];
+  const { createReplDispatch } = await import("../src/repl-dispatch.mjs");
+  const dispatch = createReplDispatch({
+    sm: { _sessions: new Map(), open: async () => "omp#1" },
+    registry: { add() {} }, stdout: { write() {} }, stderr: { write() {} },
+    defaultAgent: "omp",
+    resumeFlow: async (id) => { seen.push(id); },
+  });
+  const r = await dispatch("/resume run-42", { source: "human" });
+  assert.equal(r.redraw, true);
+  assert.deepEqual(seen, ["run-42"]);
+});
+
+test("/resume 缺 runId → usage,不调 resumeFlow", async () => {
+  const errs = [];
+  const { createReplDispatch } = await import("../src/repl-dispatch.mjs");
+  const dispatch = createReplDispatch({
+    sm: { _sessions: new Map(), open: async () => "omp#1" },
+    registry: { add() {} }, stdout: { write() {} }, stderr: { write: (s) => errs.push(s) },
+    defaultAgent: "omp",
+    resumeFlow: async () => { throw new Error("should not call"); },
+  });
+  const r = dispatch("/resume", { source: "human" });
+  const res = r && typeof r.then === "function" ? await r : r;
+  assert.equal(res.redraw, true);
+  assert.match(errs.join(""), /usage: \/resume/);
 });
