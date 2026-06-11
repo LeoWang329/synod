@@ -5,6 +5,8 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, resolveProfile } from "../src/config.mjs";
+import { registerConfigBackends } from "../src/config.mjs";
+import { getBackend, backendNames, _unregisterForTests } from "../src/backends/registry.mjs";
 
 function makeDirs() {
   const home = mkdtempSync(join(tmpdir(), "synod-home-"));
@@ -71,4 +73,21 @@ test("resolveProfile:profile → openBackend 参数(role→systemPrompt)", async
     write: true, mesh: false, systemPrompt: "你是 coder",
   });
   assert.equal(resolveProfile(cfg, "ghost"), null);
+});
+
+test("registerConfigBackends:type:cli 注册 generic 适配器;与内置同名拒绝", async () => {
+  const cfg = {
+    backends: {
+      "t6-echo": { type: "cli", bin: process.execPath, args: ["-e", "console.log('v1')"], promptVia: "arg" },
+    },
+  };
+  await registerConfigBackends(cfg);
+  assert.ok(backendNames().includes("t6-echo"));
+  assert.equal(typeof getBackend("t6-echo").open, "function");
+  _unregisterForTests("t6-echo");
+
+  await assert.rejects(
+    registerConfigBackends({ backends: { omp: { type: "cli", bin: "x" } } }),
+    /already registered/,
+  );
 });

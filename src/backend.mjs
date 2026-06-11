@@ -409,6 +409,7 @@ class OmpSession extends EventEmitter {
     this.cwd = assertCwd(options.cwd);
     this.write = Boolean(options.write);
     this.mesh = Boolean(options.mesh);
+    this.systemPrompt = options.systemPrompt || null;
     this.model = sanitizeAgentArg(options.model || null, "model");
     this.effort = sanitizeAgentArg(options.effort || null, "effort");
     this.createdAt = nowIso();
@@ -453,8 +454,12 @@ class OmpSession extends EventEmitter {
       );
     }
 
-    if (this.mesh) {
-      args.push(`--append-system-prompt=${MESH_INSTRUCTIONS}`);
+    const injected = [
+      this.mesh ? MESH_INSTRUCTIONS : null,
+      this.systemPrompt,
+    ].filter(Boolean).join("\n\n");
+    if (injected) {
+      args.push(`--append-system-prompt=${injected}`);
     }
 
     appendLog(
@@ -852,6 +857,7 @@ class CodexSession extends EventEmitter {
     this.cwd = assertCwd(options.cwd);
     this.write = Boolean(options.write);
     this.mesh = Boolean(options.mesh);
+    this.systemPrompt = options.systemPrompt || null;
     this.model = sanitizeAgentArg(options.model || null, "model");
     this.effort = sanitizeAgentArg(options.effort || null, "effort");
     this.createdAt = nowIso();
@@ -989,8 +995,12 @@ class CodexSession extends EventEmitter {
       ephemeral: true,
       experimentalRawEvents: false,
     };
-    if (this.mesh) {
-      threadParams.developerInstructions = MESH_INSTRUCTIONS;
+    const injected = [
+      this.mesh ? MESH_INSTRUCTIONS : null,
+      this.systemPrompt,
+    ].filter(Boolean).join("\n\n");
+    if (injected) {
+      threadParams.developerInstructions = injected;
     }
 
     const started = await withTimeout(

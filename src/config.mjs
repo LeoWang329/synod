@@ -5,6 +5,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { registerBackend, getBackend as _getBackend } from "./backends/registry.mjs";
+import { makeGenericCliAdapter } from "./backends/generic-cli.mjs";
 
 function fail(file, msg) {
   throw new Error(`config error: ${msg} (in ${file})`);
@@ -81,4 +83,25 @@ export function resolveProfile(config, name) {
     mesh: p.mesh,
     systemPrompt: p.role,
   };
+}
+
+/** 把 config.backends 注册进 adapter 注册表(在内置注册之后调用)。 */
+export async function registerConfigBackends(config) {
+  for (const [name, spec] of Object.entries(config.backends ?? {})) {
+    if (_getBackend(name)) {
+      throw new Error(`config error: backend "${name}" already registered (built-in or duplicate)`);
+    }
+    if (spec.type === "cli") {
+      registerBackend(makeGenericCliAdapter(name, spec));
+    } else {
+      const mod = await import(pathToFileURL(spec.path).href);
+      const adapter = mod.default;
+      if (!adapter || adapter.name !== name) {
+        throw new Error(
+          `config error: backend module ${spec.path} must default-export an adapter with name "${name}"`,
+        );
+      }
+      registerBackend(adapter);
+    }
+  }
 }
