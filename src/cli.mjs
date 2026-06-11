@@ -323,7 +323,9 @@ async function main({
     if (!runs.length) { stdout.write("No runs.\n"); return 0; }
     for (const r of runs) {
       const when = r.startedAt ? new Date(r.startedAt).toISOString() : "?";
-      stdout.write(`${r.runId}  ${when}  ${r.status}\n`);
+      const status = r.status === "failed" && r.failedNode ? `failed@${r.failedNode}` : r.status;
+      const wt = r.worktrees && r.worktrees.length ? `  worktrees=${r.worktrees.length}` : "";
+      stdout.write(`${r.runId}  ${when}  ${status}${wt}\n`);
     }
     return 0;
   }
