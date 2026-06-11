@@ -97,11 +97,10 @@ export function createApprove({ io, logger, getSignal, getReplay, headless = fal
           });
         } catch { /* 写失败不阻断退出 */ }
       }
-      // 记一条 approve 中断(best-effort,供尸检)。
-      await logger.logStep(ctx, {
-        node: "approve", type: "approve", attempt: 1, input: body, output: "(awaiting-human)",
-        meta: { accepted: false, aborted: false, awaiting: true },
-      }).catch(() => {});
+      // 注:**绝不**为 headless 暂停写 logStep——succeeded 行会被 parseRunLog 当成
+      // 已完成 approve,resume 时被 replay 回放成"已拒绝",绕过真人审批。checkpoint
+      // (含 pending/stoppedAt)已是权威尸检记录;resume 时无该 succeeded 行 → replay
+      // miss → approve 走 live 重新向人呈现(DoD#3)。
       // onApprovalNeeded 事件挂点(1D 接命令钩子 + 终端铃;本计划只 emit)。
       try { events?.emit("approvalNeeded", { runId: ctx.runId, node: "approve", content: body }); }
       catch { /* 事件订阅者异常不影响主流程 */ }

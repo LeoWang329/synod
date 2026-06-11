@@ -120,6 +120,8 @@ function printHelp(stdout) {
     "  --list              List flow names and descriptions (pure, no agent).\n" +
     "  --progress          Stream agent deltas to stdout with [agent:model] prefix.\n" +
     "                      Also enabled by SYNOD_PROGRESS=1.\n" +
+    "  --headless          Pause at approve/reviseWithHuman (write checkpoint, exit 5)\n" +
+    "                      instead of prompting. Auto-enabled when stdin is not a TTY.\n" +
     "  --help, -h          Print this help.\n" +
     "\n" +
     "Input is JSON-parsed if valid; otherwise treated as a raw string.\n" +
@@ -446,7 +448,11 @@ const _isMain = isEntrypoint(import.meta.url);
 
 if (_isMain) {
   installShutdownHandlers({ interactiveSigint: false });
-  main()
+  // headless 判定 = !stdin.isTTY || --headless(§4.13)。isTTY 只在此 standalone 入口
+  // 读取——经 injectedHeadless 注入 main();管道/重定向(isTTY 为 undefined)→ headless,
+  // 故 `echo ... | node src/flow.mjs <flow>` 遇 approve 写断点退出 5,不再永久等 stdin。
+  // 注入式调用(测试/cli)不走此处,既有行为零回归。TTY 下传 undefined → 回落 --headless。
+  main({ headless: process.stdin.isTTY ? undefined : true })
     .then((code) => {
       // P2-43:正常退出也兜底——fire-and-forget 的非 reuse agent() 子进程
       // 不会被 process.exit 砍成孤儿(幂等,常态 no-op)。

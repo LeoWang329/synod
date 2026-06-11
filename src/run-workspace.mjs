@@ -106,7 +106,17 @@ export function createRunWorkspace({ cwd, worktreesRoot, runsRoot }) {
       const dirty = git(ws.path, ["status", "--porcelain"]).stdout;
       if (dirty) {
         git(ws.path, ["add", "-A"]);
-        git(ws.path, ["commit", "-q", "-m", `synod ${runId} ${ws.name}`]);
+        const c = git(ws.path, ["commit", "-q", "-m", `synod ${runId} ${ws.name}`]);
+        if (c.status !== 0) {
+          // commit 失败(无 git identity / pre-commit hook 拒绝 / 锁):绝不进入
+          // merge→remove --force 路径(那会把未提交改动连 worktree 一起删掉丢工作)。
+          // 保留 worktree+分支,进 conflicts 留人处理。
+          conflicts.push({
+            name: ws.name, branch: ws.branch, path: ws.path, files: [],
+            error: `auto-commit failed: ${c.stderr || c.error?.message || `exit ${c.status}`}`,
+          });
+          continue;
+        }
       }
       // 2) 在主仓(起始分支)合并该分支。
       const m = git(cwd, ["merge", "--no-ff", "-m", `synod merge ${ws.name}`, ws.branch]);
@@ -114,6 +124,7 @@ export function createRunWorkspace({ cwd, worktreesRoot, runsRoot }) {
         git(cwd, ["worktree", "remove", "--force", ws.path]);
         git(cwd, ["branch", "-D", ws.branch]);
         merged.push(ws.name);
+        _acquired.delete(key);   // 已合并清理 → 不再出现在 list()/checkpoint.worktrees
       } else {
         const files = git(cwd, ["diff", "--name-only", "--diff-filter=U"]).stdout
           .split("\n").map((s) => s.trim()).filter(Boolean);

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, existsSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, existsSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,4 +74,30 @@ test("worktree 记录持久化到 runsRoot/<runId>/workspaces.json", () => {
   const rec = JSON.parse(readFileSync(join(runsRoot, "run5", "workspaces.json"), "utf8"));
   assert.equal(rec[0].name, "feat");
   assert.equal(rec[0].branch, "synod/run5/feat");
+});
+
+test("finalize:合并成功后从 _acquired 清理(list 不含已删 worktree)", () => {
+  const cwd = makeGitRepo();
+  const ws = createRunWorkspace({ cwd, worktreesRoot: worktreesRoot(), runsRoot: worktreesRoot() });
+  const a = ws.acquire({ runId: "run6", name: "feat" });
+  writeFileSync(join(a.path, "n.txt"), "x\n");
+  ws.finalize({ runId: "run6" });
+  assert.equal(ws.list("run6").length, 0, "已合并 worktree 不再出现在 list()/checkpoint");
+});
+
+test("finalize:脏 worktree commit 失败(pre-commit 拒绝)→ 保留 worktree 不丢工作", () => {
+  const cwd = makeGitRepo();
+  // 装一个必失败的 pre-commit hook(worktree 共享主仓 .git/hooks)
+  const hook = join(cwd, ".git", "hooks", "pre-commit");
+  writeFileSync(hook, "#!/bin/sh\nexit 1\n");
+  chmodSync(hook, 0o755);
+  const ws = createRunWorkspace({ cwd, worktreesRoot: worktreesRoot(), runsRoot: worktreesRoot() });
+  const a = ws.acquire({ runId: "run-cf", name: "feat" });
+  writeFileSync(join(a.path, "work.txt"), "uncommitted work\n");
+  const r = ws.finalize({ runId: "run-cf" });
+  assert.equal(r.merged.length, 0);
+  assert.equal(r.conflicts.length, 1);
+  assert.match(r.conflicts[0].error || "", /auto-commit failed/);
+  assert.ok(existsSync(a.path), "commit 失败 → worktree 保留(不进 remove --force)");
+  assert.ok(existsSync(join(a.path, "work.txt")), "未提交文件未被删掉");
 });

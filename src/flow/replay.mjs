@@ -41,6 +41,9 @@ export async function parseRunLog(runDir) {
     if (e.event === "step:started") {
       started.set(e.stepId, e);
     } else if (e.event === "step:succeeded") {
+      // 失败边界之后的 succeeded(如 defer 清理)不进重放计划——失败步及其后
+      // 全部真跑,绝不让边界后的 step 越界回放。
+      if (sawFailure) continue;
       // 按 stepId 配对:仅收有对应 started、且未重复的 succeeded(孤立/重复行跳过)。
       if (started.has(e.stepId) && !succeeded.has(e.stepId)) {
         succeeded.set(e.stepId, e);

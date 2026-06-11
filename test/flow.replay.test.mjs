@@ -82,3 +82,20 @@ test("prepareResume:无 checkpoint → 抛带 runId 的错(无从复跑 flowName
   writeFileSync(join(root, "run-z", "run.log.jsonl"), "");
   await assert.rejects(prepareResume(root, "run-z"), /no checkpoint.*run-z/i);
 });
+
+test("parseRunLog:失败边界之后的 succeeded(如 defer 清理)不进重放计划", async () => {
+  const { root, runId } = makeRun([
+    { event: "step:started",   runId: "run-x", stepId: "s1", node: "omp",  type: "agent", attempt: 1, ts: 1, key: "0:omp:aaaaaaaa" },
+    { event: "step:succeeded", runId: "run-x", stepId: "s1", node: "omp",  type: "agent", attempt: 1, ts: 2, key: "0:omp:aaaaaaaa", output: "OK" },
+    { event: "step:started",   runId: "run-x", stepId: "s2", node: "omp",  type: "agent", attempt: 1, ts: 3, key: "1:omp:bbbbbbbb" },
+    { event: "step:failed",    runId: "run-x", stepId: "s2", node: "omp",  type: "agent", attempt: 1, ts: 4, key: "1:omp:bbbbbbbb", error: { message: "boom" } },
+    // 失败之后的 defer 清理 succeeded —— 绝不能进重放(否则越界回放)
+    { event: "step:started",   runId: "run-x", stepId: "s3", node: "bash", type: "bash",  attempt: 1, ts: 5, key: "2:bash:cccccccc" },
+    { event: "step:succeeded", runId: "run-x", stepId: "s3", node: "bash", type: "bash",  attempt: 1, ts: 6, key: "2:bash:cccccccc", output: "cleanup", code: 0 },
+  ]);
+  const { steps, sawFailure, failedNode } = await parseRunLog(join(root, runId));
+  assert.equal(sawFailure, true);
+  assert.equal(failedNode, "omp");
+  assert.equal(steps.length, 1, "只 s1(失败前)进重放;s3 在失败边界之后被排除");
+  assert.equal(steps[0].node, "omp");
+});

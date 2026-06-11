@@ -72,6 +72,59 @@ test("首跑 agent 失败写 failed checkpoint;resume 重放 bash + 真跑 agent
   assert.equal(readCheckpoint(runsRoot, runId).status, "done");
 });
 
+const APPROVE_FLOW = `
+import { approve } from "synod/flow";
+export const meta = { description: "one-approve" };
+export async function run(ctx) {
+  const r = await approve(ctx, { content: "ship it?" });
+  return { decision: r };
+}
+`;
+
+function setupApproveFlow() {
+  const proj = mkdtempSync(join(tmpdir(), "synod-hl-proj-"));
+  mkdirSync(join(proj, "workflows"));
+  writeFileSync(join(proj, "workflows", "appr.mjs"), APPROVE_FLOW);
+  mkdirSync(join(proj, "node_modules"), { recursive: true });
+  symlinkSync(PKG_ROOT, join(proj, "node_modules", "synod"), "dir");
+  const runsRoot = mkdtempSync(join(tmpdir(), "synod-hl-runs-"));
+  return { proj, runsRoot };
+}
+
+test("headless approve → 退出码 5(不写可重放 succeeded);resume 在 TTY 重新问、不被回放成拒绝(B1)", async () => {
+  const { proj, runsRoot } = setupApproveFlow();
+  const noAgent = async () => { throw new Error("no agent in approve flow"); };
+
+  // 1) headless 首跑:approve 写断点 awaiting-approval、退出码 5
+  const out1 = collector(); const err1 = collector();
+  const code1 = await flowMain({
+    argv: ["appr"], stdout: out1, stderr: err1,
+    openBackend: noAgent, workflowsRoot: join(proj, "workflows"), cwd: proj, runsRoot,
+    headless: true,
+    io: { stdout: out1, stdin: {}, question: () => { throw new Error("headless must not ask"); } },
+  });
+  assert.equal(code1, 5, "headless approve → 退出码 5");
+  const { runId } = findOnlyRun(runsRoot);
+  assert.equal(readCheckpoint(runsRoot, runId).status, "awaiting-approval");
+
+  // 2) B1 核心:headless 暂停不写可重放 step(run.log 无 approve succeeded)
+  const r = await prepareResume(runsRoot, runId);
+  assert.equal(r.steps.length, 0, "headless 暂停不写可重放 step");
+
+  // 3) resume(TTY,headless=false):approve 走 live 重新问 → accept,不被回放成拒绝
+  const out2 = collector(); const err2 = collector();
+  const code2 = await flowMain({
+    argv: ["appr"], stdout: out2, stderr: err2,
+    openBackend: noAgent, workflowsRoot: join(proj, "workflows"), cwd: proj, runsRoot,
+    resume: { runId: r.runId, input: r.input, steps: r.steps },
+    headless: false,
+    io: { stdout: out2, stdin: {}, question: async () => "accept" },
+  });
+  assert.equal(code2, 0, "resume 在 TTY 重新问并 accept → 完成");
+  assert.match(out2.text(), /"accepted": true/);
+  assert.equal(readCheckpoint(runsRoot, runId).status, "done");
+});
+
 function findOnlyRun(runsRoot) {
   const ents = readdirSync(runsRoot, { withFileTypes: true }).filter((e) => e.isDirectory());
   return { runId: ents[0].name };
