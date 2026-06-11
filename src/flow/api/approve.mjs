@@ -52,7 +52,7 @@ import { shortHash } from "../logger.mjs";
 
 const ACCEPT_WORDS = new Set(["accept", "y", "yes", "ok", "approve"]);
 
-export function createApprove({ io, logger, getSignal, getReplay, headless = false, events, runsRoot }) {
+export function createApprove({ io, logger, getSignal, getReplay, headless = false, events, runsRoot, onApprovalNeeded }) {
   /**
    * approve(ctx, opts) — present content to a human, wait for decision.
    *
@@ -104,6 +104,7 @@ export function createApprove({ io, logger, getSignal, getReplay, headless = fal
       // onApprovalNeeded 事件挂点(1D 接命令钩子 + 终端铃;本计划只 emit)。
       try { events?.emit("approvalNeeded", { runId: ctx.runId, node: "approve", content: body }); }
       catch { /* 事件订阅者异常不影响主流程 */ }
+      try { onApprovalNeeded?.(ctx); } catch { /* 通知钩子异常不阻断暂停 */ }
       throw awaitingHumanError({ runId: ctx.runId, node: "approve" });
     }
 
@@ -113,6 +114,9 @@ export function createApprove({ io, logger, getSignal, getReplay, headless = fal
     if (content != null) {
       io.stdout.write(String(content) + "\n");
     }
+
+    // ── 交互路径通知钩子(§4.13:呈现后、等输入前触发一次)──────────
+    if (onApprovalNeeded) { try { onApprovalNeeded(ctx); } catch { /* 钩子异常不阻断审批 */ } }
 
     // ── Read one line via shared io.question ───────────────────────
     // Race against signal so that even io.question implementations that

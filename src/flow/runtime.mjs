@@ -110,7 +110,7 @@ function defaultIo() {
 export function createRuntime({
   fs, clock, openBackend, io, progress, config, signal,
   workflowsRoot, maxDepth, maxActiveSubRuns, runsRoot, replay,
-  headless, events, runWorkspace,
+  headless, events, runWorkspace, onApprovalNeeded,
 } = {}) {
   const resolvedIo = io ?? defaultIo();
   const logger = createLogger({ fs, clock, runsRoot });
@@ -214,7 +214,7 @@ export function createRuntime({
 
   const approve = createApprove({
     io: resolvedIo, logger, getSignal: signalFor, getReplay: replayStep,
-    headless: Boolean(headless), events, runsRoot,
+    headless: Boolean(headless), events, runsRoot, onApprovalNeeded,
   });
 
   const reviseWithHuman = createReviseWithHuman({

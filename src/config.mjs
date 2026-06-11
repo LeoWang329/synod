@@ -60,6 +60,18 @@ function validateLayer(cfg, file) {
       fail(file, `backends.${name}: type must be "cli" or "module", got "${b.type}"`);
     }
   }
+  const hk = cfg.hooks;
+  if (hk !== undefined) {
+    if (!hk || typeof hk !== "object") fail(file, "hooks must be an object");
+    for (const [k, v] of Object.entries(hk)) {
+      if (!["onDone", "onError", "onApprovalNeeded"].includes(k)) {
+        fail(file, `hooks.${k} is not a known hook (onDone/onError/onApprovalNeeded)`);
+      }
+      if (typeof v !== "string" || !v) {
+        fail(file, `hooks.${k} must be a non-empty command string`);
+      }
+    }
+  }
 }
 
 async function loadLayer(file) {
@@ -81,7 +93,7 @@ export async function loadConfig({ cwd = process.cwd(), home = os.homedir() } = 
     path.join(home, ".synod", "config.mjs"),
     path.join(cwd, "synod.config.mjs"),
   ];
-  const merged = { agents: {}, backends: {}, defaults: {}, flows: [], sources: [] };
+  const merged = { agents: {}, backends: {}, defaults: {}, flows: [], hooks: {}, sources: [] };
   for (const file of files) {
     const cfg = await loadLayer(file);
     if (!cfg) continue;
@@ -100,6 +112,7 @@ export async function loadConfig({ cwd = process.cwd(), home = os.homedir() } = 
       }
     }
     Object.assign(merged.defaults, cfg.defaults ?? {});
+    Object.assign(merged.hooks, cfg.hooks ?? {});
   }
   return merged;
 }

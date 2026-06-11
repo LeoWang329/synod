@@ -28,6 +28,7 @@ import { openBackend } from "./backend.mjs";
 import { installShutdownHandlers, closeAllLiveSessionsSync } from "./shutdown.mjs";
 import { createRunWorkspace, scanResidualWorktrees } from "./run-workspace.mjs";
 import { createFlowView } from "./ui/flow-view.mjs";
+import { createNotifier } from "./notify.mjs";
 
 // ── CLI parsing ──────────────────────────────────────────────────────────
 
@@ -353,6 +354,7 @@ export async function main({
   const runWorkspace = createRunWorkspace({ cwd, worktreesRoot, runsRoot });
 
   // Build runtime with real dependencies
+  const notifier = createNotifier({ config, stdout, stderr });
   let runtime;
   try {
     runtime = createRuntime({
@@ -368,6 +370,10 @@ export async function main({
       headless,
       replay: resume ? { runId: resume.runId, steps: resume.steps } : undefined,
       runWorkspace,
+      onApprovalNeeded: (ctx) => {
+        notifier.bell();
+        notifier.fire("onApprovalNeeded", { runId: ctx.runId, summary: `flow ${args.name} awaiting approval` }).catch(() => {});
+      },
     });
   } catch (err) {
     stderr.write(`Error: failed to create runtime: ${err.message}\n`);
@@ -427,6 +433,9 @@ export async function main({
     } catch {}
     view?.failed();
     stderr.write(`Error: flow "${args.name}" failed: ${runErr.message}\n`);
+    notifier.title(`synod: ${args.name} failed`);
+    notifier.bell();
+    await notifier.fire("onError", { runId: ctx.runId, summary: runErr.message, exitCode: 1 });
     return 1;
   }
   try { writeCheckpoint(runsRoot, ctx.runId, { status: "done", worktrees: wtRecords }); } catch {}
@@ -435,6 +444,9 @@ export async function main({
   } else if (result !== undefined) {
     stdout.write(JSON.stringify(result, null, 2) + "\n");
   }
+  notifier.title(`synod: ${args.name} done`);
+  notifier.bell();
+  await notifier.fire("onDone", { runId: ctx.runId, summary: `flow ${args.name} done`, exitCode: 0 });
   return 0;
 }
 
