@@ -6,6 +6,7 @@
 
 import { enabled, color, labelColor } from "./ui/ansi.mjs";
 import { turnBoundary } from "./ui/decorations.mjs";
+import { renderSessionsTable } from "./ui/sessions-table.mjs";
 
 // ── Line buffer ───────────────────────────────────────────────────────
 function createLineBuffer(label, stdout = process.stdout, { colorize } = {}) {
@@ -100,7 +101,7 @@ async function openSession({ agent, model, effort, write, mesh, systemPrompt, cw
  * @param {(label: string, result: object) => void} [opts.onTurnComplete] — called when a turn completes successfully (with the send result)
  * @param {boolean} [opts.errorLeadingNewline] — if true, prefix error lines with "\n" (interactive); default false (runTasks)
  */
-function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaults, onIdle, onTurnComplete, errorLeadingNewline = false }) {
+function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaults, onIdle, onTurnComplete, errorLeadingNewline = false, relays }) {
   const _sessions = new Map(); // label → { session, agent, model, effort, lineBuf, sendQueue }
   let _currentLabel = null;
   let _pendingOpens = 0;
@@ -109,6 +110,7 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
   const _onIdle = onIdle || (() => {});
   const _onTurnComplete = onTurnComplete || null;
   const _nl = errorLeadingNewline ? "\n" : "";
+  const _relays = relays || (() => []);
 
   // ── Label allocation (per-instance counters) ────────────────────────
   const agentCounters = { omp: 0, codex: 0 };
@@ -237,17 +239,19 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
     return false;
   }
 
-  /** Write formatted session list to stdout. */
+  /** Write the sessions table to stdout (§4: * current + RELAY column). */
   function list() {
-    stdout.write("\n");
+    const rows = [];
     for (const [label, info] of _sessions) {
-      const marker = label === _currentLabel ? "*" : " ";
       const sum = info.session.summary();
-      stdout.write(
-        ` ${marker} ${label}  ${sum.agent}  ${sum.model || "default"}  ${sum.status}\n`,
-      );
+      rows.push({ label, agent: sum.agent, model: sum.model, status: sum.status, turns: sum.turnCount });
     }
-    stdout.write("\n");
+    stdout.write(renderSessionsTable({
+      sessions: rows,
+      currentLabel: _currentLabel,
+      relays: _relays(),
+      colorOn: enabled(stdout),
+    }));
   }
 
   /** Drain all send queues to quiescence — loops until no new turns were

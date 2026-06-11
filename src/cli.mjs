@@ -427,6 +427,7 @@ async function main({
     onTurnComplete: (label, result) => {
       if (_composedOnTurnComplete) _composedOnTurnComplete(label, result);
     },
+    relays: () => registry.list(),
   });
   _smForRelay = sm;
 
