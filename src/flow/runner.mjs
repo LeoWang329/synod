@@ -1,11 +1,12 @@
-import { setCurrentRuntime, getCurrentRuntimeRaw } from "./current-run.mjs";
+import { runWithRuntime } from "./current-run.mjs";
 
 /**
  * runFlow(runtime, flowModule, ctx, input)
  *
  * Execute a loaded flow module within the given runtime context.
- * Saves and restores the previous runtime so nested runFlow() calls
- * work correctly.
+ * Uses AsyncLocalStorage so nested and concurrent runFlow() calls
+ * each see their own runtime — ALS exit automatically restores the
+ * parent context.
  *
  * @param {object} runtime     – the DI container (createRuntime return)
  * @param {object} flowModule  – { run: Function, meta: object, name: string }
@@ -14,16 +15,11 @@ import { setCurrentRuntime, getCurrentRuntimeRaw } from "./current-run.mjs";
  * @returns {Promise<*>} the flow's return value
  */
 export async function runFlow(runtime, flowModule, ctx, input) {
-  const prev = getCurrentRuntimeRaw();
-  setCurrentRuntime(runtime);
-  try {
-    return await flowModule.run(ctx, input);
-  } finally {
+  return runWithRuntime(runtime, async () => {
     try {
-      await runtime.disposeRun?.(ctx);
+      return await flowModule.run(ctx, input);
     } finally {
-      // Always restore, even if disposeRun threw
-      setCurrentRuntime(prev);
+      await runtime.disposeRun?.(ctx);
     }
-  }
+  });
 }

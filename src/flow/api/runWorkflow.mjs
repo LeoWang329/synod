@@ -12,13 +12,11 @@ export const DEFAULT_MAX_DEPTH = 5;
 
 /**
  * Default maximum number of concurrently active child sub-runs.
- * In sequential mode (no AsyncLocalStorage), "concurrent" means
- * "active at the same nesting level".  With the module-level
- * current-run singleton, only one child can truly run at a time;
- * this guard exists for forward-compatibility with future
- * parallel execution.
+ * AsyncLocalStorage 落地后,同一 parent 的多个 runWorkflow
+ * 可真正并发,故默认不再限流(Infinity)。maxDepth 仍是递归深度护栏(默认 5);
+ * 需要限流的 flow 可显式传 maxActiveSubRuns。
  */
-export const DEFAULT_MAX_ACTIVE_SUB_RUNS = 1;
+export const DEFAULT_MAX_ACTIVE_SUB_RUNS = Infinity;
 
 /**
  * Create the `runWorkflow` primitive bound to a runtime.
