@@ -345,7 +345,12 @@ const _isMain = isEntrypoint(import.meta.url);
 if (_isMain) {
   installShutdownHandlers({ interactiveSigint: false });
   main()
-    .then((code) => process.exit(code ?? 0))
+    .then((code) => {
+      // P2-43:正常退出也兜底——fire-and-forget 的非 reuse agent() 子进程
+      // 不会被 process.exit 砍成孤儿(幂等,常态 no-op)。
+      closeAllLiveSessionsSync();
+      process.exit(code ?? 0);
+    })
     .catch((err) => {
       console.error("Fatal:", err);
       closeAllLiveSessionsSync();

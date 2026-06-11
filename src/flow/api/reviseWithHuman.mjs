@@ -71,10 +71,10 @@ export function createReviseWithHuman({ agent, approve, logger: _logger }) {
    *
    * @param {object} ctx        – pure-data context (must have .runId)
    * @param {string} draft      – initial document to revise
-   * @param {object} [opts]
-   * @param {string} [opts.agent="omp"]     – backend name
-   * @param {string} [opts.model]           – model string
-   * @param {AbortSignal} [opts.signal]     – passed through to approve()
+   * @param {object} [opts]     – passed through to agent() unchanged
+   *                              (profile/agent/model/effort/write/
+   *                              systemPrompt/signal). `reuse` is forced
+   *                              true and `prompt` is built per turn.
    * @returns {Promise<string>} final (or last) document
    */
   async function reviseWithHuman(ctx, draft, opts = {}) {
@@ -82,12 +82,7 @@ export function createReviseWithHuman({ agent, approve, logger: _logger }) {
       throw new Error("reviseWithHuman: draft is required (non-empty string)");
     }
 
-    const {
-      agent: agentName = "omp",
-      model,
-      signal,
-    } = opts;
-
+    const { signal } = opts;
     let doc = draft;
 
     while (true) {
@@ -105,27 +100,22 @@ export function createReviseWithHuman({ agent, approve, logger: _logger }) {
       const feedback = decision.feedback;
       const prompt = revisePrompt(doc, feedback);
 
+      // opts 原样透传(profile/agent/model/effort/write/systemPrompt/signal),
+      // reuse 强制 true、prompt 用本轮构建的。agent 自己解析 profile + signal。
+      // 默认 agent 由调用方/profile 决定,缺省时 agent.mjs 的 validateAgentArgs
+      // 会要求 agent 名——与 agent/agentLoop 一致。
+      const callOpts = { ...opts, prompt, reuse: true };
       try {
         // reuse:true keeps the session alive across turns (optimisation).
         // Every prompt includes the full doc so correctness does NOT
         // depend on session memory.
-        doc = await agent(ctx, {
-          agent: agentName,
-          model,
-          prompt,
-          reuse: true,
-        });
+        doc = await agent(ctx, callOpts);
       } catch (_err) {
         // Session may have dropped — the failed agent() call already
         // removed it from the reuse pool and closed it.  Retry with a
         // fresh session; the full doc is in the prompt so the new
         // session has everything it needs.
-        doc = await agent(ctx, {
-          agent: agentName,
-          model,
-          prompt,
-          reuse: true,
-        });
+        doc = await agent(ctx, callOpts);
       }
     }
   }

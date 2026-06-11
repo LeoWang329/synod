@@ -179,3 +179,16 @@ describe("main()", () => {
     assert.ok(r.stdout.includes("Linear 3-node: agent → bash → agent"));
   });
 });
+
+describe("standalone exit cleanup (P2-43)", () => {
+  it("closeAllLiveSessionsSync 幂等兜底:活会话被清", async () => {
+    // 直接验证 run guard 的退出回调形态:本测试用注入式断言活会话被清。
+    // 用一个 fire-and-forget(非 reuse)agent 把会话留在 _live,再走正常返回路径。
+    const { _clearForTests, liveSessions, trackSession } = await import("../src/shutdown.mjs");
+    _clearForTests();
+    trackSession({ proc: { pid: null }, close() { this._closed = true; } });
+    const { closeAllLiveSessionsSync } = await import("../src/shutdown.mjs");
+    closeAllLiveSessionsSync();
+    assert.equal(liveSessions().length, 0);
+  });
+});

@@ -156,4 +156,18 @@ describe("defer", () => {
     const result = await scope.run(async () => "ok");
     assert.strictEqual(result, "ok");
   });
+
+  it("P2-40 fn 与 defer 同时抛 → defer 错误附着到 fnErr.suppressed", async () => {
+    const scope = createDeferScope();
+    scope.defer(() => { throw new Error("defer-boom"); });
+    await assert.rejects(
+      scope.run(async () => { throw new Error("fn-boom"); }),
+      (err) => {
+        assert.equal(err.message, "fn-boom");
+        assert.ok(err.suppressed instanceof Error, "defer 错误必须附着");
+        assert.equal(err.suppressed.message, "defer-boom");
+        return true;
+      },
+    );
+  });
 });

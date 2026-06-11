@@ -19,8 +19,8 @@
  *   After all defers execute, the first defer error is re-thrown
  *   (or the original `fn` error, if any).
  * - If BOTH `fn` and at least one defer throw, the `fn` error takes
- *   precedence (it's the root cause), and defer errors are attached
- *   as `.suppressed` (when the runtime supports `Error.cause`).
+ *   precedence (it's the root cause), and the first defer error is
+ *   attached as `.suppressed`.
  *
  * `dispose()` runs remaining defers without a work function — useful
  * when the scope outlives the `run()` call.
@@ -82,9 +82,8 @@ export function createDeferScope() {
     const deferErr = await _drain();
 
     if (fnErr) {
-      if (deferErr && Error.cause !== undefined) {
-        // Attach the first defer error as suppressed metadata.
-        // Error.cause is writable in Node 20+.
+      if (deferErr) {
+        // 把首个 defer 错误作为 suppressed 附着(Node 20+ 任意 Error 都可加普通属性)。
         try {
           fnErr.suppressed = deferErr;
         } catch {

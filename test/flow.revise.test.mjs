@@ -158,7 +158,7 @@ describe("reviseWithHuman", () => {
       io.feed("accept");
 
       const initialDraft = "This is a long document.";
-      const result = await rt.reviseWithHuman(ctx, initialDraft);
+      const result = await rt.reviseWithHuman(ctx, initialDraft, { agent: "omp" });
 
       assert.strictEqual(result, "revised doc v1",
         "final doc should be the agent-revised version after accept");
@@ -226,7 +226,7 @@ describe("reviseWithHuman", () => {
       io.feed("accept");
 
       const initialDraft = "Initial draft content.";
-      const result = await rt.reviseWithHuman(ctx, initialDraft);
+      const result = await rt.reviseWithHuman(ctx, initialDraft, { agent: "omp" });
 
       // Final result correct despite session drop
       assert.strictEqual(result, "doc v2 after round2",
@@ -305,7 +305,7 @@ describe("reviseWithHuman", () => {
       const initialDraft = "Draft that can't be fixed.";
       let error;
       try {
-        await rt.reviseWithHuman(ctx, initialDraft);
+        await rt.reviseWithHuman(ctx, initialDraft, { agent: "omp" });
       } catch (err) {
         error = err;
       }
@@ -345,7 +345,7 @@ describe("reviseWithHuman", () => {
         io.feed("/abort");
 
         const initialDraft = "Draft for abort test.";
-        const result = await rt.reviseWithHuman(ctx, initialDraft);
+        const result = await rt.reviseWithHuman(ctx, initialDraft, { agent: "omp" });
 
         assert.strictEqual(result, "revised v1",
           "/abort must return the current (revised) draft");
@@ -451,6 +451,26 @@ describe("reviseWithHuman", () => {
         assert.strictEqual(result, initialDraft,
           "mid-wait abort must return the current draft");
       });
+    });
+  });
+
+  describe("opts passthrough (P2-42)", () => {
+    it("reviseWithHuman 把 profile/effort/write/systemPrompt 透传内部 agent()", async () => {
+      const seen = [];
+      const agent = async (ctx, opts) => { seen.push(opts); return "revised"; };
+      let calls = 0;
+      const approve = async () => (calls++ === 0 ? { accepted: false, feedback: "改" } : { accepted: true });
+      const { createReviseWithHuman } = await import("../src/flow/api/reviseWithHuman.mjs");
+      const revise = createReviseWithHuman({ agent, approve, logger: { logStep: async () => {} } });
+      const out = await revise({ runId: "r", cwd: "/tmp" }, "draft", {
+        profile: "writer", effort: "high", write: true, systemPrompt: "你是编辑",
+      });
+      assert.equal(out, "revised");
+      assert.equal(seen[0].profile, "writer");
+      assert.equal(seen[0].effort, "high");
+      assert.equal(seen[0].write, true);
+      assert.equal(seen[0].systemPrompt, "你是编辑");
+      assert.equal(seen[0].reuse, true);
     });
   });
 });

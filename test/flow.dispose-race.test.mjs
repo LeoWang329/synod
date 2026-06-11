@@ -42,3 +42,22 @@ test("disposeRun 幂等且正常路径语义不变", async () => {
   assert.equal(pooled._closed, true);
   assert.equal(rs.reusedSessions.size, 0);
 });
+
+test("P2-41 一个会话 close 抛错不阻断其余会话关闭,也不掩盖 flow 结果", async () => {
+  const closed = [];
+  const mkSession = (id, throwOnClose) => ({
+    summary: () => ({ id }),
+    on() {}, off() {},
+    async send() { return { text: "x" }; },
+    close() { closed.push(id); if (throwOnClose) throw new Error(`close-${id}-boom`); },
+  });
+  const fs = { writeFile: async () => {}, appendFile: async () => {} };
+  const opened = [mkSession("a", true), mkSession("b", false)];
+  let i = 0;
+  const runtime = createRuntime({ openBackend: async () => opened[i++], fs, clock: () => 0 });
+  const ctx = runtime.createCtx(undefined, { cwd: "/tmp" });
+  await runtime.agent(ctx, { agent: "omp", prompt: "1", reuse: true });
+  await runtime.agent(ctx, { agent: "omp", model: "m2", prompt: "2", reuse: true });
+  await runtime.disposeRun(ctx);                 // 不得抛
+  assert.deepEqual(closed.sort(), ["a", "b"], "两个会话都要被 close");
+});

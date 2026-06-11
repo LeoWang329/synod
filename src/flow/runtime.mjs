@@ -176,7 +176,7 @@ export function createRuntime({
     rs.disposed = true;     // 先立标记:在飞的 agentOnce 持有同一对象引用,看得见
     try {
       for (const [, entry] of rs.reusedSessions) {
-        entry.session.close();
+        try { entry.session.close(); } catch { /* 单个会话 close 抛错不连累其余 */ }
         await logger.logSession(ctx, {
           event: "session:close",
           sessionId: entry.sessionId,
