@@ -29,7 +29,9 @@ export function createNotifier({ config, stdout = process.stdout, stderr = proce
         stderr.write(`synod: hook ${event} failed to start: ${err.message}\n`);
         return finish();
       }
-      child.unref();   // 不因 hook 子进程拖住事件循环
+      // 注:**不** child.unref()——要让 child 保持事件循环存活,await fire() 才能可靠
+      // 等到 hook 完成(否则无其他 ref handle 时 Node 判定 top-level await 永不 settle 而早退)。
+      // timer 单独 unref:它只是 15s 强杀兜底,不该自己拖住事件循环;child 负责拖住。
       const timer = setTimeout(() => { try { child.kill(); } catch {} finish(); }, HOOK_TIMEOUT_MS);
       if (timer.unref) timer.unref();
       child.on("error", (err) => {
