@@ -1625,7 +1625,7 @@ registerBackend({
 });
 
 export { terminateProcessTree, scheduleForceKill };
-export { spawnPlan, assertCwd, makeId, nowIso, stripAnsi, clampText, withTimeout };
+export { spawnPlan, assertCwd, makeId, nowIso, stripAnsi, clampText, withTimeout, sanitizeAgentArg };
 
 /** 探测一个 CLI 的可用性与版本(spawnSync <bin> --version)。 */
 export function probeCliVersion(bin, versionArgs = ["--version"]) {

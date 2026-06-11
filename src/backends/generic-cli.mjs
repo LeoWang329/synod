@@ -12,7 +12,7 @@ import { EventEmitter } from "node:events";
 import { spawn as _defaultSpawn, spawnSync, ChildProcess } from "node:child_process";
 import {
   spawnPlan, assertCwd, makeId, nowIso, stripAnsi, clampText, withTimeout,
-  terminateProcessTree, scheduleForceKill, probeCliVersion,
+  terminateProcessTree, scheduleForceKill, probeCliVersion, sanitizeAgentArg,
 } from "../backend.mjs";
 import { writePidRecord, removePidRecord } from "../pid-registry.mjs";
 
@@ -26,7 +26,7 @@ class GenericCliSession extends EventEmitter {
     this.agent = name;
     this.cwd = assertCwd(options.cwd);
     this.write = Boolean(options.write);       // 声明式 CLI 无权限语义,仅记录
-    this.model = options.model ?? null;
+    this.model = sanitizeAgentArg(options.model ?? null, "model");
     this.effort = options.effort ?? null;
     this.status = "idle";
     this.isStreaming = false;
@@ -62,6 +62,7 @@ class GenericCliSession extends EventEmitter {
     if (promptVia === "arg") args.push(String(message));
 
     const plan = spawnPlan(spec.bin, args);
+    guardWindowsArgInjection(plan, promptVia, this.agent);   // P1-31
     this.#setStatus("running", true);
     this.lastAssistantText = "";
 
@@ -81,6 +82,10 @@ class GenericCliSession extends EventEmitter {
     proc.stderr.on("data", (chunk) => {
       stderrTail = clampText(stderrTail + chunk.toString("utf8"), 4000);
     });
+    // P0-27:stdin 死管道(CLI 提前退出 / prompt 超管道缓冲)的 EPIPE 必须被监听,
+    // 否则冒泡成 uncaughtException 拉闸整个 synod。记入 lastError,让 turn 以
+    // 进程退出(turnDone 的 close reject)收口。
+    proc.stdin.on("error", (err) => { this.lastError = err.message; });
     if (promptVia === "stdin") proc.stdin.end(String(message));
     else proc.stdin.end();
 
@@ -174,6 +179,21 @@ class GenericCliSession extends EventEmitter {
   }
 }
 
+/**
+ * win32 防注入(P1-31):spawnPlan 在 .cmd/.bat shim 下把 args 经 cmd.exe 转发,
+ * Node 只做 MSVCRT 引号、不转义 cmd 元字符。promptVia:"arg" 把 prompt 原文进 argv,
+ * `x&calc` 这类 token 会被 cmd 二次解析执行。落到 cmd.exe 包装时,arg 模式直接拒绝
+ * (强制 stdin)。纯函数,以便在非 win32 主机单测。
+ */
+export function guardWindowsArgInjection(plan, promptVia, name) {
+  if (promptVia === "arg" && /(^|[\\/])cmd\.exe$/i.test(plan.command)) {
+    throw new Error(
+      `backend "${name}": promptVia:"arg" is unsafe through a Windows .cmd/.bat shim ` +
+      `(cmd.exe re-parses metacharacters). Use promptVia:"stdin" for this backend.`,
+    );
+  }
+}
+
 export function makeGenericCliAdapter(name, spec) {
   if (!spec || typeof spec.bin !== "string" || !spec.bin) {
     throw new Error(`backend "${name}": spec.bin is required`);
@@ -186,6 +206,15 @@ export function makeGenericCliAdapter(name, spec) {
     name,
     doctor: () => probeCliVersion(spec.bin, spec.versionArgs ?? ["--version"]),
     async open(options) {
+      if (options.systemPrompt) {
+        throw new Error(
+          `backend "${name}" (type:cli) does not support systemPrompt/role; ` +
+          `it has no system-prompt injection channel. Use a type:module adapter.`,
+        );
+      }
+      if (options.mesh) {
+        throw new Error(`backend "${name}" (type:cli) does not support mesh injection.`);
+      }
       return new GenericCliSession(name, spec, options);
     },
   };
