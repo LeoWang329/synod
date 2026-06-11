@@ -357,6 +357,35 @@ describe("approve", () => {
     });
   });
 
+  // ── Abort listener cleanup (A1) ───────────────────────────────────────
+
+  it("abort listener removed after normal ask resolves (no leak)", async () => {
+    const io = createFakeIo();
+    const runtime = createRuntime({ fs: memoryFs(), clock: () => 0, io });
+    const ctx = runtime.createCtx({ input: {} });
+
+    const controller = new AbortController();
+    const signal = controller.signal;
+    // Patch removeEventListener to count "abort" removals
+    let removeCount = 0;
+    const _origRemove = signal.removeEventListener.bind(signal);
+    signal.removeEventListener = (type, ...args) => {
+      if (type === "abort") removeCount++;
+      return _origRemove(type, ...args);
+    };
+
+    const pending = runtime.approve(ctx, { content: "check", signal });
+    await new Promise((r) => setImmediate(r));
+    io.stdin.feed("accept");
+    await pending;
+
+    assert.strictEqual(
+      removeCount,
+      1,
+      "removeEventListener('abort') must be called once after ask resolves — no leak",
+    );
+  });
+
   // ── Smoke: stdin single-owner (tested on REAL makeQuestion) ─────────
 
   describe("smoke: stdin single-owner", () => {

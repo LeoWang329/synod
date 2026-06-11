@@ -178,6 +178,35 @@ describe("main()", () => {
     assert.ok(r.stdout.includes("linear:"));
     assert.ok(r.stdout.includes("Linear 3-node: agent → bash → agent"));
   });
+
+  // ── A2: --list scans config.flows directories ────────────────────────
+
+  it("--list includes flows from config.flows directory (A2)", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { join: pathJoin } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+
+    const tmpRoot = mkdtempSync(pathJoin(tmpdir(), "synod-list-cfgflows-"));
+    writeFileSync(
+      pathJoin(tmpRoot, "extra.mjs"),
+      `export const meta = { description: "extra cfg flow" };\nexport async function run() {}`,
+    );
+
+    const stdout = collector();
+    const stderr = collector();
+    const code = await main({
+      argv: ["--list"],
+      stdout, stderr,
+      openBackend: fakeOpenBackend,
+      workflowsRoot: VALID_DIR,
+      config: { flows: [tmpRoot], agents: {}, backends: {}, defaults: {} },
+      fs: noopFs,
+    });
+
+    assert.strictEqual(code, 0, `exit code must be 0, stderr: ${stderr.text()}`);
+    assert.ok(stdout.text().includes("linear:"), "must list flow from main workflowsRoot");
+    assert.ok(stdout.text().includes("extra:"), "must list flow from config.flows dir");
+  });
 });
 
 describe("standalone exit cleanup (P2-43)", () => {

@@ -83,16 +83,24 @@ export function createApprove({ io, logger, getSignal }) {
     try {
       const ask = io.question(prompt, { signal });
       if (signal) {
-        const abort = new Promise((_, rej) => {
+        // Wrap ask so the abort listener is always removed (raceAbort pattern).
+        // {once:true} alone only removes the listener when it fires; if ask
+        // settles first the listener would leak.  Explicit removeEventListener
+        // in both resolution branches prevents accumulation across REPL sessions.
+        line = await new Promise((resolve, reject) => {
           if (signal.aborted) {
-            rej(Object.assign(new Error("Aborted"), { name: "AbortError" }));
-          } else {
-            signal.addEventListener("abort", () =>
-              rej(Object.assign(new Error("Aborted"), { name: "AbortError" })),
-              { once: true });
+            ask.catch(() => {});   // suppress unhandled rejection from ask
+            reject(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+            return;
           }
+          const handler = () =>
+            reject(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+          signal.addEventListener("abort", handler, { once: true });
+          ask.then(
+            (v) => { signal.removeEventListener("abort", handler); resolve(v); },
+            (e) => { signal.removeEventListener("abort", handler); reject(e); },
+          );
         });
-        line = await Promise.race([ask, abort]);
       } else {
         line = await ask;
       }

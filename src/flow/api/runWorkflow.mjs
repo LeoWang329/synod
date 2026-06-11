@@ -28,7 +28,7 @@ export const DEFAULT_MAX_ACTIVE_SUB_RUNS = Infinity;
  * @param {object} opts
  * @param {string} opts.workflowsRoot    – absolute path to workflows directory
  * @param {number} [opts.maxDepth]       – max nesting depth (default 5)
- * @param {number} [opts.maxActiveSubRuns] – max concurrent child runs (default 1)
+ * @param {number} [opts.maxActiveSubRuns] – max concurrent child runs (default Infinity)
  * @param {Function} opts.getRuntime     – () => runtime DI container
  * @returns {Function} runWorkflow(ctx, childRef, input)
  */

@@ -74,8 +74,6 @@ export function createLogger({ fs, clock, runsRoot }) {
     await fs.appendFile(p.logPath, JSON.stringify(obj) + "\n");
   }
 
-  /**
-
 /** Fields that meta must NOT overwrite. */
 const RESERVED_META_KEYS = new Set([
   "event", "runId", "stepId", "node", "type", "attempt",

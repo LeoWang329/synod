@@ -264,13 +264,41 @@ export async function main({
 
   const root = args.workflowsRoot ? resolve(cwd, args.workflowsRoot) : defaultRoot;
 
+  // Load config (needed by both --list and run; injectedConfig bypasses load).
+  // When a caller (e.g. cli.mjs REPL /flow) already loaded + registered the
+  // config in this process, it injects `config` so we must NOT register again
+  // (registerConfigBackends throws on an already-registered backend name).
+  let config = injectedConfig;
+  if (!config) {
+    try {
+      const { loadConfig, registerConfigBackends } = await import("./config.mjs");
+      config = await loadConfig({ cwd, home: process.env.SYNOD_HOME || undefined });
+      await registerConfigBackends(config);
+    } catch (err) {
+      stderr.write(`Error: ${err.message}\n`);
+      return 1;
+    }
+  }
+
   // ── --list ─────────────────────────────────────────────────────────
   if (args.list) {
-    let result;
-    try { result = await discoverFlows(root); }
-    catch (err) { stderr.write(`Error: failed to discover flows in ${root}: ${err.message}\n`); return 1; }
-    for (const f of result.flows) stdout.write(`${f.name}: ${f.meta.description}\n`);
-    for (const e of result.errors) stderr.write(`warning: flow "${e.name}" skipped: ${e.error}\n`);
+    // Scan both the default/overridden root and any config.flows directories.
+    // First occurrence of a name wins (root takes priority over config.flows).
+    const searchRoots = [root, ...((config && config.flows) || [])];
+    const allFlows = [];
+    const allErrors = [];
+    const seen = new Set();
+    for (const r of searchRoots) {
+      let result;
+      try { result = await discoverFlows(r); }
+      catch (err) { stderr.write(`Error: failed to discover flows in ${r}: ${err.message}\n`); return 1; }
+      for (const f of result.flows) {
+        if (!seen.has(f.name)) { seen.add(f.name); allFlows.push(f); }
+      }
+      for (const e of result.errors) allErrors.push(e);
+    }
+    for (const f of allFlows) stdout.write(`${f.name}: ${f.meta.description}\n`);
+    for (const e of allErrors) stderr.write(`warning: flow "${e.name}" skipped: ${e.error}\n`);
     return 0;
   }
 
@@ -287,23 +315,8 @@ export async function main({
   const progressSink = progressEnabled ? createDefaultProgressSink(stdout) : undefined;
 
   // per-run 目录由 logger 的 ensureRunDir 负责;不再在 cwd 建 artifacts。
-  const runsRoot = runsRootOpt ?? resolve(os.homedir(), ".synod", "runs");
-
-  // Load config (profiles + custom backends) before building the runtime.
-  // When a caller (e.g. cli.mjs REPL /flow) already loaded + registered the
-  // config in this process, it injects `config` so we must NOT register again
-  // (registerConfigBackends throws on an already-registered backend name).
-  let config = injectedConfig;
-  if (!config) {
-    try {
-      const { loadConfig, registerConfigBackends } = await import("./config.mjs");
-      config = await loadConfig({ cwd, home: process.env.SYNOD_HOME || undefined });
-      await registerConfigBackends(config);
-    } catch (err) {
-      stderr.write(`Error: ${err.message}\n`);
-      return 1;
-    }
-  }
+  // SYNOD_HOME 对齐:cli.mjs --runs 也用 SYNOD_HOME,两者必须一致(A3)。
+  const runsRoot = runsRootOpt ?? resolve(process.env.SYNOD_HOME || os.homedir(), ".synod", "runs");
 
   // Build runtime with real dependencies
   let runtime;
