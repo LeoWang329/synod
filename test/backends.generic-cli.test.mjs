@@ -3,6 +3,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { Readable, Writable } from "node:stream";
+import { EventEmitter } from "node:events";
 import { makeGenericCliAdapter } from "../src/backends/generic-cli.mjs";
 
 const FIX = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "backends");
@@ -90,5 +92,65 @@ test("并发 send → 第二个拒绝(running 守卫)", async () => {
   await new Promise((r) => setTimeout(r, 100));
   await assert.rejects(session.send("b"), /already has a running turn/);
   await p;
+  session.close();
+});
+
+test("timeout — 在飞进程真的被杀(OS 层)", async () => {
+  const adapter = makeGenericCliAdapter("sleepy-os", {
+    type: "cli", bin: NODE, args: [path.join(FIX, "sleep-cli.mjs")], promptVia: "arg",
+  });
+  const session = await adapter.open({ cwd });
+  let capturedPid;
+  // 在超时(300ms)前轮询拿到在飞子进程 pid。
+  const p = assert.rejects(session.send("x", { wait: true, timeout_ms: 300 }), /Timed out/);
+  const t0 = Date.now();
+  while (!capturedPid && Date.now() - t0 < 250) {
+    if (session.proc?.pid) capturedPid = session.proc.pid;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  await p;
+  assert.ok(capturedPid, "应捕获到在飞子进程 pid");
+  await new Promise((r) => setTimeout(r, 500));
+  assert.throws(() => process.kill(capturedPid, 0), "超时后 OS 进程必须已消亡");
+  session.close();
+});
+
+test("abort() 杀在飞进程", async () => {
+  const adapter = makeGenericCliAdapter("aborty", {
+    type: "cli", bin: NODE, args: [path.join(FIX, "sleep-cli.mjs")], promptVia: "arg",
+  });
+  const session = await adapter.open({ cwd });
+  const p = session.send("x", { wait: true }).catch(() => "ended");
+  await new Promise((r) => setTimeout(r, 200));
+  const pid = session.proc?.pid;
+  assert.ok(pid, "应有在飞进程");
+  await session.abort();
+  await p;
+  await new Promise((r) => setTimeout(r, 500));
+  assert.throws(() => process.kill(pid, 0), "abort 后进程应消亡");
+  session.close();
+});
+
+// 注入式 fake 子进程:EventEmitter + 可读 stdout/stderr + 可写 stdin,
+// pid=null(无真实 OS pid,验证组杀/PID 记录对 fake 安全),microtask 内即收 close。
+function fakeProc() {
+  const proc = new EventEmitter();
+  proc.stdout = new Readable({ read() {} });
+  proc.stderr = new Readable({ read() {} });
+  proc.stdin = new Writable({ write(c, e, cb) { cb(); } });
+  proc.pid = null;
+  proc.exitCode = null; proc.signalCode = null;
+  queueMicrotask(() => { proc.stdout.push(null); proc.emit("close", 0, null); });
+  return proc;
+}
+
+test("modelFlag — model 存在时注入 [modelFlag, model]", async () => {
+  let capturedArgs;
+  const adapter = makeGenericCliAdapter("mf", {
+    type: "cli", bin: NODE, args: ["base"], promptVia: "arg", modelFlag: "--model",
+  });
+  const session = await adapter.open({ cwd, model: "m-7b", spawn: (cmd, args) => { capturedArgs = args; return fakeProc(); } });
+  await session.send("hi", { wait: true });
+  assert.deepEqual(capturedArgs, ["base", "--model", "m-7b", "hi"]);
   session.close();
 });

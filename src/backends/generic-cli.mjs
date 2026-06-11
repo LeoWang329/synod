@@ -9,11 +9,12 @@
 //         modelFlag?: string, versionArgs?: string[], timeoutMs?: number }
 
 import { EventEmitter } from "node:events";
-import { spawn as _defaultSpawn, spawnSync } from "node:child_process";
+import { spawn as _defaultSpawn, spawnSync, ChildProcess } from "node:child_process";
 import {
   spawnPlan, assertCwd, makeId, nowIso, stripAnsi, clampText, withTimeout,
-  terminateProcessTree, probeCliVersion,
+  terminateProcessTree, scheduleForceKill, probeCliVersion,
 } from "../backend.mjs";
+import { writePidRecord, removePidRecord } from "../pid-registry.mjs";
 
 const IS_WINDOWS = process.platform === "win32";
 const DEFAULT_TURN_TIMEOUT_MS = 10 * 60 * 1000;
@@ -70,6 +71,7 @@ class GenericCliSession extends EventEmitter {
       detached: this._detached,
     });
     this.proc = proc;
+    writePidRecord({ sessionId: this.id, pid: proc.pid, bin: this.agent });
     let stderrTail = "";
     proc.stdout.on("data", (chunk) => {
       const text = chunk.toString("utf8");
@@ -109,11 +111,12 @@ class GenericCliSession extends EventEmitter {
         this.lastError = err.message;
         // 超时/关闭:在飞进程必须死(组杀,孙进程一起收)
         if (proc.exitCode === null && proc.signalCode === null) {
-          terminateProcessTree(proc.pid, "SIGKILL", { group: this._detached });
+          terminateProcessTree(proc.pid, "SIGKILL", { group: this._detached && proc instanceof ChildProcess });
         }
         throw err;
       } finally {
         this.proc = null;
+        removePidRecord(this.id);
         this.turnCount += 1;
         if (this.status !== "closed") this.#setStatus("idle", false);
       }
@@ -138,7 +141,7 @@ class GenericCliSession extends EventEmitter {
 
   async abort() {
     const proc = this.proc;
-    if (proc?.pid) terminateProcessTree(proc.pid, "SIGTERM", { group: this._detached });
+    if (proc?.pid) terminateProcessTree(proc.pid, "SIGTERM", { group: this._detached && proc instanceof ChildProcess });
     return { aborted: true, session_id: this.id };
   }
 
@@ -157,10 +160,13 @@ class GenericCliSession extends EventEmitter {
     this.#setStatus("closed", false);
     const proc = this.proc;
     if (proc?.pid) {
-      terminateProcessTree(proc.pid, "SIGTERM", { group: this._detached });
-      // 残存者由进程退出时 closeAllLiveSessionsSync 的组 SIGKILL 兜底。
+      terminateProcessTree(proc.pid, "SIGTERM", { group: this._detached && proc instanceof ChildProcess });
+      // SIGTERM 现在,3s 后 SIGKILL 兜底(对 SIGTERM-免疫的外部 CLI),
+      // 与内建会话一致;进程退出时 closeAllLiveSessionsSync 再兜底一层。
+      scheduleForceKill(proc, 3000, { group: this._detached && proc instanceof ChildProcess });
     }
     this.proc = null;
+    removePidRecord(this.id);
     return { closed: true, session_id: this.id };
   }
 }
