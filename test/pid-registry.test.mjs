@@ -142,3 +142,16 @@ test("reapOrphans:异构记录(agent-bridge schema)绝不删除/触碰", { skip:
   removePidRecord("codex-foreign-xyz"); // cleanup (removePidRecord uses synod's path; also unlink directly)
   try { (await import("node:fs")).unlinkSync(foreign); } catch {}
 });
+
+test("P2-34 reapOrphans 跳过 pid<=1 的损坏记录(不对自身进程组发信号)", async () => {
+  const { writeFileSync, mkdirSync, unlinkSync } = await import("node:fs");
+  mkdirSync(PID_DIR, { recursive: true });
+  const file = join(PID_DIR, "t1c-bad-pid.json");
+  writeFileSync(file, JSON.stringify({
+    sessionId: "t1c-bad-pid", pid: 0, ownerPid: 999999999, startedAt: Date.now(), comm: "x",
+  }));
+  const r = reapOrphans({ stderr: { write() {} } });
+  // pid:0 记录被当作 foreign/损坏跳过,绝不进入 kill 路径
+  assert.ok(!r.reaped.some((x) => x.sessionId === "t1c-bad-pid"));
+  try { unlinkSync(file); } catch {}
+});

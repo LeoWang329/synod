@@ -484,10 +484,24 @@ class OmpSession extends EventEmitter {
       detached: !IS_WINDOWS,
     });
     this._detached = !IS_WINDOWS && this.proc instanceof ChildProcess;
+    // P2-33:spawn 一成功就登记——ready 等待最长 60s,这窗口内信号/崩溃也能收尸。
+    // 与 openBackend 的兜底叠加,幂等无害;start 失败时 close() 会 untrack+removePidRecord 回滚。
+    trackSession(this);
+    writePidRecord({ sessionId: this.id, pid: this.proc.pid, bin: "omp" });
     appendLog(
       this.logFile,
       `[agent-bridge] spawned OMP pid=${this.proc.pid}\n`,
     );
+    // P0-27:stdin 死管道(EPIPE)必须被监听,否则冒泡成 uncaughtException 拉闸整个 synod。
+    this.proc.stdin.on("error", (err) => {
+      this.lastError = err.message;
+      appendLog(this.logFile, `[agent-bridge] OMP stdin error: ${err.message}\n`);
+      if (this.status !== "closed") {
+        this.#emitError(err);
+        for (const pending of this.pending.values()) pending.reject(err);
+        this.pending.clear();
+      }
+    });
 
     this.proc.stdin.on("close", () =>
       appendLog(this.logFile, "[agent-bridge] OMP stdin closed\n"),
@@ -534,6 +548,8 @@ class OmpSession extends EventEmitter {
           code,
           signal,
         });
+        // 早返回分支(status==="closed",deliberate close)——close() 已注销,这里幂等兜底
+        untrackSession(this); removePidRecord(this.id);
         return;
       }
       this.lastError =
@@ -552,6 +568,9 @@ class OmpSession extends EventEmitter {
           new Error(this.lastError || "OMP RPC exited."),
         );
       this.pending.clear();
+      // self-exit 分支末尾(this.pending.clear() 之后):后端自退后死会话不得滞留 _live
+      untrackSession(this);
+      removePidRecord(this.id);
     });
 
     await withTimeout(this.readyPromise, OMP_READY_TIMEOUT_MS, "Timed out waiting for OMP RPC ready.");
@@ -667,10 +686,19 @@ class OmpSession extends EventEmitter {
   request(type, extra = {}) {
     const id = `req_${++this.requestCounter}`;
     const payload = { id, type, ...extra };
+    const stdin = this.proc?.stdin;
+    // 死管道门控(P0-27):stdin 不存在/已销毁,或我们 spawn 的子进程已退出
+    // (exitCode!==null)或被信号杀(signalCode!==null)→ 同步拒绝,绝不裸写。
+    // signalCode 用 ?? null 归一(与 shutdown.mjs ⑧ 同款):fake 无该字段→undefined,
+    // 不能误判为"被信号杀"。
+    if (!stdin || stdin.destroyed ||
+        this.proc.exitCode !== null || (this.proc.signalCode ?? null) !== null) {
+      throw new Error(`OMP session ${this.id} stdin is not writable`);
+    }
     const promise = new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
     });
-    this.proc.stdin.write(`${JSON.stringify(payload)}\n`);
+    stdin.write(`${JSON.stringify(payload)}\n`);
     return promise;
   }
 
@@ -679,7 +707,7 @@ class OmpSession extends EventEmitter {
       throw new Error("message is required.");
     if (this.status === "closed")
       throw new Error(`OMP session ${this.id} is closed.`);
-    if (!this.proc || this.proc.exitCode !== null)
+    if (!this.proc || this.proc.exitCode !== null || (this.proc.signalCode ?? null) !== null)
       throw new Error(`OMP process for ${this.id} is not running.`);
     // 并发 turn 守卫(与 CodexSession 对齐):synod 的排队是宿主侧
     // sendQueue 的职责,会话层并发 send 只会互相污染 turnText 累积。
@@ -748,6 +776,10 @@ class OmpSession extends EventEmitter {
   }
 
   async abort() {
+    if (!this.proc || this.proc.exitCode !== null || (this.proc.signalCode ?? null) !== null) {
+      this.#setStatus("idle", false, { source: "abort" });
+      return { aborted: true, session_id: this.id };
+    }
     await this.request("abort");
     this.#setStatus("idle", false, { source: "abort" });
     return { aborted: true, session_id: this.id };
@@ -841,8 +873,12 @@ class OmpSession extends EventEmitter {
     // failure) where the process keeps running — symmetric with CodexSession.close.
     // (In the CLI's immediate-exit paths the unref'd 3s timer simply never fires,
     // which is fine: win32 already killed synchronously, POSIX relies on SIGTERM.)
-    terminateProcessTree(this.proc?.pid, "SIGTERM", { group: this._detached === true });
-    scheduleForceKill(this.proc, 3000, { group: this._detached === true });
+    // P1-30:仅当我们 spawn 的子进程确实仍在运行才组杀——exitCode/signalCode
+    // 任一非 null 即已退出,陈旧 pid 可能已被 OS 复用,无门控组杀会误伤无辜。
+    if (this.proc && this.proc.exitCode === null && this.proc.signalCode === null) {
+      terminateProcessTree(this.proc.pid, "SIGTERM", { group: this._detached === true });
+      scheduleForceKill(this.proc, 3000, { group: this._detached === true });
+    }
     return { closed: true, session_id: this.id };
   }
 }
@@ -897,6 +933,9 @@ class CodexSession extends EventEmitter {
       detached: !IS_WINDOWS,
     });
     this._detached = !IS_WINDOWS && this.proc instanceof ChildProcess;
+    // P2-33:spawn 一成功就登记(与 OmpSession 同构,与 openBackend 兜底叠加幂等)。
+    trackSession(this);
+    writePidRecord({ sessionId: this.id, pid: this.proc.pid, bin: "codex" });
     appendLog(
       this.logFile,
       `[agent-bridge] spawned codex app-server pid=${this.proc.pid}\n`,
@@ -952,6 +991,8 @@ class CodexSession extends EventEmitter {
           code,
           signal,
         });
+        // 早返回分支(deliberate close)——close() 已注销,这里幂等兜底(P2-32)
+        untrackSession(this); removePidRecord(this.id);
         return;
       }
       this.lastError =
@@ -967,6 +1008,9 @@ class CodexSession extends EventEmitter {
       this.#rejectAll(
         new Error(this.lastError || "codex app-server exited."),
       );
+      // self-exit 分支末尾:后端自退后死会话不得滞留 _live(P2-32)
+      untrackSession(this);
+      removePidRecord(this.id);
     });
 
     await withTimeout(
@@ -1503,9 +1547,12 @@ class CodexSession extends EventEmitter {
     // Reject the active turn AND every in-flight RPC (turn/start, turn/interrupt, ...)
     // so nothing is left pending; the proc "close" handler early-returns once closed.
     this.#rejectAll(new Error("session closed"));
+    // P1-30:仅当我们 spawn 的子进程确实仍在运行才组杀(exitCode/signalCode 皆 null)。
     const pid = this.proc?.pid;
-    terminateProcessTree(pid, "SIGTERM", { group: this._detached === true });
-    scheduleForceKill(this.proc, 3000, { group: this._detached === true });
+    if (this.proc && this.proc.exitCode === null && this.proc.signalCode === null) {
+      terminateProcessTree(pid, "SIGTERM", { group: this._detached === true });
+      scheduleForceKill(this.proc, 3000, { group: this._detached === true });
+    }
     return { closed: true, session_id: this.id };
   }
 }

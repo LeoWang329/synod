@@ -106,7 +106,7 @@ export function reapOrphans({ stderr = process.stderr } = {}) {
     // 防止跨工具误删/误判。
     if (
       typeof rec.sessionId !== "string" ||
-      !Number.isInteger(rec.pid) ||
+      !Number.isInteger(rec.pid) || rec.pid <= 1 ||
       !Number.isInteger(rec.ownerPid)
     ) {
       skipped.push({ rec, reason: "foreign-record" });

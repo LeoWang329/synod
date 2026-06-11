@@ -34,7 +34,13 @@ export function closeAllLiveSessionsSync({ graceMs = 500 } = {}) {
   const pids = [];
   for (const s of sessions) {
     const pid = s.proc?.pid;
-    if (Number.isInteger(pid) && pid > 1) pids.push(pid);
+    // P1-30:只收集仍在运行的子进程 pid(exitCode/signalCode 皆 null);已退出的
+    // 陈旧 pid 可能被 OS 复用,SIGKILL 它=误杀。fake(无 signalCode 字段)→ undefined
+    // !== null 为真,但其 pid 为 null 已被 Number.isInteger 挡掉,二者叠加安全。
+    if (Number.isInteger(pid) && pid > 1 &&
+        s.proc.exitCode === null && (s.proc.signalCode ?? null) === null) {
+      pids.push(pid);
+    }
     try { s.close(); } catch {}
   }
   _live.clear();
