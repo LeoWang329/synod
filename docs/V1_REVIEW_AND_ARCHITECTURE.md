@@ -484,5 +484,7 @@ Synod 实际有**三**种一等使用面(第三种是用户要求保留的现有
 | P1 | 9 | fence /open 劫持 human 当前会话 | session-manager.mjs:172 |
 | P1 | 10 | fence 结果不回传发起 agent(leader 不知子会话 label) | control-wire.mjs:68; mesh-instructions.mjs:56 |
 | P1 | 11 | 退出时在飞 fence dispatch 可在 closeAll 后开新会话 | control-wire.mjs:55 |
-| P1 | 12 | flow agent()/agentLoop() 不支持 write/effort/mesh;agentLoop 无 progress | flow/api/agent.mjs:52; agentLoop.mjs:42 |
+| P1 | 12 | flow agent()/agentLoop() 不支持 write/effort/mesh;agentLoop 无 progress | flow/api/agent.mjs:52; agentLoop.mjs:42 | ✅ 已修 3cf1e7f(阶段1 Task8:profile/write/effort/mesh/systemPrompt 透传 + agentLoop progress sink) |
 | P2 | 13–26 | 见 §2.3 表 | — |
+
+> ✅ **阶段 1A/1B(后端插件化与配置)已落地(2026-06-11,分支 `backend-plugins`)**:§4.3(backend adapter 注册表 + 声明式 type:cli + 程序化 type:module + 惰性名列表)、§4.4(synod.config.mjs 层叠 + agent profiles + role→systemPrompt)均从「设计」转「已落地」。P1-12 已修。653 单测 + A1–A8 57 e2e + 假外部 CLI 端到端 + codex/deepseek 双审 APPROVE。详见 `docs/V1.md` 阶段 1A/1B 看板。

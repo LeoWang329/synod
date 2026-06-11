@@ -127,6 +127,30 @@ node src/cli.mjs --help          # 查看全部参数
 
 > 这是实验性编排能力;写法细节与命令 schema 见 `src/control-marker.mjs` 头注释。
 
+## 7.5 配置:接入任意 CLI 与 agent 档案(`synod.config.mjs`)
+
+两层层叠:`~/.synod/config.mjs`(全局)→ 项目根 `synod.config.mjs`(项目,覆盖全局)。配置**就是 JavaScript**(`export default {...}`),启动即加载并校验(出错带文件路径、退出码 2)。
+
+```js
+// synod.config.mjs
+export default {
+  // backends:零代码接入任意外部 CLI(每轮 spawn 一次,stdout 即输出)
+  backends: {
+    claude: { type: "cli", bin: "claude", args: ["-p"], promptVia: "arg" },
+    // type:"module" 则 path 指向自写 adapter(程序化、可带持久协议)
+  },
+  // agents:命名档案(profile);role → 注入到 agent 的 system prompt
+  agents: {
+    coder:    { backend: "omp",   model: "deepseek/deepseek-v4-pro", write: true, role: "你是资深工程师" },
+    reviewer: { backend: "claude" },
+  },
+};
+```
+
+- 用法:`node src/cli.mjs --agent claude` 直接对话;REPL 里 `/open +coder` 按档案开会话(内联 flag 覆盖档案,且**护栏不被档案绕过**);flow 里 `agent(ctx, { profile: "coder", prompt })`。
+- `type:"cli"` 可选字段:`promptVia`(`"arg"`|`"stdin"`)、`modelFlag`、`args`/`versionArgs`(字符串数组)、`timeoutMs`(正数)。
+- **诚实声明(信任模型)**:`synod.config.mjs` 与 flow 文件同属**本机用户自写**的可执行 JS——**不做沙箱**,加载即按你写的运行。只放你信任的内容,与对待自己的 `.bashrc` / `eslint.config.js` 一致。`type:"cli"` 是声明式无状态(每轮独立进程,无对话记忆);需要持久会话/协议的 CLI 用 `type:"module"`。
+
 ## 8. flow 工作流引擎
 
 把一个**固定的、确定性的工作流**写成一个 `.mjs` 文件,用原生 JS 控制流(`await` / `if` / `while` / `Promise.all`)编排 agent;不发明 DSL、不引 MCP。
