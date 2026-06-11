@@ -381,6 +381,7 @@ async function main({
   const flowsRoot = workflowsRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "workflows");
   const _pendingFlows = new Set();
   const _activeFlows = new Set();   // { ctrl } — Ctrl-C first strike aborts these
+  let _flowAbortRequested = false;  // set on first flow-abort strike; cleared when flows drain
   const flowIo = {
     stdout, stdin,
     question: (prompt, { signal } = {}) => router.claim({ prompt, signal }),
@@ -395,7 +396,13 @@ async function main({
       io: flowIo, signal: ctrl.signal,
     });
     _pendingFlows.add(p);
-    p.finally(() => { _pendingFlows.delete(p); _activeFlows.delete(handle); }).catch(() => {});
+    p.finally(() => {
+      _pendingFlows.delete(p);
+      _activeFlows.delete(handle);
+      // Flows drained → reset the abort-strike flag so the next Ctrl-C at the
+      // REPL starts fresh from the first (graceful) strike.
+      if (_activeFlows.size === 0) _flowAbortRequested = false;
+    }).catch(() => {});
     return p;
   };
 
@@ -487,15 +494,22 @@ async function main({
   // force exit.  Output strings match shutdown.mjs interactiveSigint.
   let _sigintCount = 0;
   router.onSigint(() => {
-    if (_activeFlows.size > 0 && _sigintCount === 0) {
-      // B3: abort active flows but DO NOT advance _sigintCount.  Leaving it at 0
-      // means that once the flow tears down and the user is back at the REPL, the
-      // next Ctrl-C starts fresh from the first (graceful) strike instead of being
-      // mistaken for a second strike (force exit).  The `_sigintCount === 0` guard
-      // still lets a Ctrl-C during an already-started graceful shutdown fall
-      // through to force exit below.
-      stderr.write("\nInterrupted. Cleaning up...\n");
-      for (const h of _activeFlows) h.ctrl.abort();
+    if (_activeFlows.size > 0) {
+      if (!_flowAbortRequested) {
+        // First strike with active flows: cooperative abort.  We track this on a
+        // dedicated flag (NOT _sigintCount) so that once the flow tears down and
+        // the user is back at the REPL, the next Ctrl-C starts fresh from the
+        // first (graceful) strike.  The flag is cleared when _activeFlows drains.
+        _flowAbortRequested = true;
+        stderr.write("\nInterrupted. Cleaning up...\n");
+        for (const h of _activeFlows) h.ctrl.abort();
+        return;
+      }
+      // Second strike while flows are STILL active despite the abort (wedged /
+      // non-cooperative flow) → escalate to force exit so the user is never stuck.
+      stderr.write("\nForce exiting...\n");
+      closeAllLiveSessionsSync();
+      process.exit(1);
       return;
     }
     _sigintCount += 1;

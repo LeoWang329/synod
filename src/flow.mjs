@@ -264,16 +264,20 @@ export async function main({
 
   const root = args.workflowsRoot ? resolve(cwd, args.workflowsRoot) : defaultRoot;
 
-  // Load config (needed by both --list and run; injectedConfig bypasses load).
-  // When a caller (e.g. cli.mjs REPL /flow) already loaded + registered the
-  // config in this process, it injects `config` so we must NOT register again
-  // (registerConfigBackends throws on an already-registered backend name).
+  // Load config (needed by both --list and run for config.flows; injectedConfig
+  // bypasses load). When a caller (e.g. cli.mjs REPL /flow) already loaded +
+  // registered the config in this process, it injects `config` so we must NOT
+  // register again (registerConfigBackends throws on already-registered names).
+  // registerConfigBackends is deferred to the run path: --list must stay
+  // "pure, no agent" — importing a (possibly broken) module backend just to
+  // list flow names would violate that contract.
   let config = injectedConfig;
+  let _needsRegister = false;
   if (!config) {
     try {
-      const { loadConfig, registerConfigBackends } = await import("./config.mjs");
+      const { loadConfig } = await import("./config.mjs");
       config = await loadConfig({ cwd, home: process.env.SYNOD_HOME || undefined });
-      await registerConfigBackends(config);
+      _needsRegister = true;
     } catch (err) {
       stderr.write(`Error: ${err.message}\n`);
       return 1;
@@ -300,6 +304,18 @@ export async function main({
     for (const f of allFlows) stdout.write(`${f.name}: ${f.meta.description}\n`);
     for (const e of allErrors) stderr.write(`warning: flow "${e.name}" skipped: ${e.error}\n`);
     return 0;
+  }
+
+  // Run path only: register config-declared backends now. Deferred from above so
+  // that --list stays pure (a broken module backend must not break listing).
+  if (_needsRegister) {
+    try {
+      const { registerConfigBackends } = await import("./config.mjs");
+      await registerConfigBackends(config);
+    } catch (err) {
+      stderr.write(`Error: ${err.message}\n`);
+      return 1;
+    }
   }
 
   // ── <name> ─────────────────────────────────────────────────────────

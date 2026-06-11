@@ -207,6 +207,45 @@ describe("main()", () => {
     assert.ok(stdout.text().includes("linear:"), "must list flow from main workflowsRoot");
     assert.ok(stdout.text().includes("extra:"), "must list flow from config.flows dir");
   });
+
+  // ── --list purity: a broken module backend must not break listing ────
+  it("--list 保持纯净:config 声明坏 module backend 也不导入(purity)", async () => {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { join: pathJoin } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+
+    const proj = mkdtempSync(pathJoin(tmpdir(), "synod-list-pure-"));
+    const home = mkdtempSync(pathJoin(tmpdir(), "synod-list-home-"));
+    // A type:module backend whose module throws on import — registerConfigBackends
+    // would blow up, but --list must never import it (pure, no agent).
+    writeFileSync(pathJoin(proj, "broken-backend.mjs"), `throw new Error("boom on import");`);
+    writeFileSync(
+      pathJoin(proj, "synod.config.mjs"),
+      `export default { backends: { broken: { type: "module", path: "./broken-backend.mjs" } } };`,
+    );
+
+    const savedHome = process.env.SYNOD_HOME;
+    process.env.SYNOD_HOME = home;
+    try {
+      const stdout = collector();
+      const stderr = collector();
+      // No injected config → standalone path → loadConfig(proj) sees the broken
+      // backend; with the fix, --list defers registerConfigBackends and stays green.
+      const code = await main({
+        argv: ["--list"],
+        stdout, stderr,
+        openBackend: fakeOpenBackend,
+        workflowsRoot: VALID_DIR,
+        cwd: proj,
+        fs: noopFs,
+      });
+      assert.strictEqual(code, 0, `--list must stay pure; stderr: ${stderr.text()}`);
+      assert.ok(stdout.text().includes("linear:"), "must list flows despite broken module backend");
+    } finally {
+      if (savedHome === undefined) delete process.env.SYNOD_HOME;
+      else process.env.SYNOD_HOME = savedHome;
+    }
+  });
 });
 
 describe("standalone exit cleanup (P2-43)", () => {
