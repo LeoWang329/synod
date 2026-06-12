@@ -464,6 +464,9 @@ class OmpSession extends EventEmitter {
     // during tool calls), so result().text always contains every assistant text
     // segment produced across all turns within a single send().
     this.turnText = "";
+    // Per-turn provider/RPC error captured from a turn-ending event (e.g. OMP
+    // reporting a 402 via stopReason:"error"); reset at the start of each send().
+    this.turnError = null;
     this.lastError = null;
     // Set true once the current turn is observed actually streaming (agent_start /
     // stream deltas / a live isStreaming reading); waitIdle won't accept the idle
@@ -698,6 +701,32 @@ class OmpSession extends EventEmitter {
       return;
     }
     if (message.type === "agent_end" || message.type === "turn_end") {
+      // OMP surfaces a model-API failure (402/429/5xx, refusal, …) by ending the
+      // turn with stopReason:"error" on the assistant message — NOT a top-level
+      // {type:"error"} line. Detect it here so the turn isn't silently completed
+      // as an empty success. turnError dedups the turn_end + agent_end pair (both
+      // carry the same error) to a single 'error' emit.
+      const endMsg =
+        message.message ||
+        (Array.isArray(message.messages)
+          ? message.messages[message.messages.length - 1]
+          : null);
+      if (
+        !this.turnError &&
+        endMsg &&
+        (endMsg.stopReason === "error" || endMsg.errorStatus)
+      ) {
+        const detail =
+          endMsg.errorMessage ||
+          (endMsg.errorStatus
+            ? `OMP turn failed (status ${endMsg.errorStatus}).`
+            : "OMP turn failed.");
+        const err = new Error(detail);
+        if (endMsg.errorStatus) err.errorStatus = endMsg.errorStatus;
+        this.lastError = detail;
+        this.turnError = err;
+        this.#emitError(err);
+      }
       this.turnCount += 1;
       this.#setStatus("idle", false, { source: message.type });
       return;
@@ -761,6 +790,7 @@ class OmpSession extends EventEmitter {
     // (a stale idle reading from before this turn actually starts).
     this.turnStarted = false;
     this.turnText = "";
+    this.turnError = null;
     this.#setStatus("running", true, { source: "send" });
     await this.request("prompt", { message: String(message) });
     if (options.wait) {
@@ -776,6 +806,10 @@ class OmpSession extends EventEmitter {
         } catch {}
         throw err;
       }
+      // A turn that ended in a provider error (e.g. 402 Insufficient Balance)
+      // reaches idle "cleanly" from waitIdle's view; surface it to wait:true
+      // callers (flows / --task) as a rejection rather than an empty result.
+      if (this.turnError) throw this.turnError;
       return await this.result();
     }
     return { accepted: true, session_id: this.id, status: this.status };
