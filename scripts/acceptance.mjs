@@ -45,6 +45,9 @@ function runCli(args, { inputLines = [], timeoutMs = 120_000, envExtra = {} } = 
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...envExtra },
     });
+    // Track the agent backends THIS CLI spawns (descendants of child.pid) so the
+    // residue check counts only our own processes, not unrelated agent sessions.
+    const tracker = trackAgents(child.pid);
 
     let stdout = "";
     let stderr = "";
@@ -56,6 +59,7 @@ function runCli(args, { inputLines = [], timeoutMs = 120_000, envExtra = {} } = 
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      tracker.stop();
       child.kill("SIGTERM");
       reject(new Error(`Timeout after ${timeoutMs}ms`));
     }, timeoutMs);
@@ -64,7 +68,7 @@ function runCli(args, { inputLines = [], timeoutMs = 120_000, envExtra = {} } = 
       clearTimeout(timer);
       if (settled) return;
       settled = true;
-      resolve({ stdout, stderr, code, signal });
+      resolve({ stdout, stderr, code, signal, tracker });
     });
 
     // Feed input lines one by one, waiting for prompt between steps
@@ -128,59 +132,141 @@ async function _waitForPattern(getStdout, pattern, timeoutMs = 30_000) {
 }
 
 
-/** Returns Set of PIDs matching omp/codex agent subprocesses (command-line match). */
-function getAgentPids() {
-  const pids = new Set();
+// ── residue detection ──────────────────────────────────────────────────
+// We must verify the agent (omp/codex) processes that the synod CLI WE launched
+// are gone after it exits. A naive global "any omp --mode rpc on the machine"
+// scan with a before/after diff is unreliable: an UNRELATED agent session (e.g.
+// an agent-bridge MCP server's omp, or a second synod) that merely starts during
+// the test window gets miscounted as synod residue (false positive), and on a
+// dev box that is common. Instead we track the *exact* PIDs that were spawned as
+// descendants of our CLI's pid while it was alive, then check whether any of
+// those specific PIDs survived. Unrelated sessions never enter that set; real
+// leaks are caught on both platforms because the PID was recorded while it was
+// still our descendant (POSIX reparents orphans to init, Windows leaves a
+// dangling ppid — recording during the run sidesteps both).
 
+/** Snapshot of all processes as { pid, ppid, cmd }. */
+function processTable() {
   if (process.platform === "win32") {
-    // omp.exe carries "--mode rpc"; codex's app-server (spawned via codex.cmd →
-    // node) carries "app-server". Match either on the full command line so the
-    // residue checks genuinely verify cleanup on Windows.
-    // Exclude the query's own powershell.exe (its command line literally contains
-    // the patterns) and the OpenAI Codex *desktop app* servers (they carry
-    // "--listen stdio" / "--analytics-default-enabled"; synod's npm codex carries
-    // neither). The before/after diff then reflects only synod-spawned agents.
+    // Emit JSON (not a delimiter-joined string) so a command line that itself
+    // contains the delimiter can't corrupt parsing.
     const script =
-      "Get-CimInstance Win32_Process | " +
-      "Where-Object { $_.CommandLine -and $_.Name -notmatch 'powershell|pwsh' -and (" +
-      "$_.CommandLine -match '--mode rpc' -or " +
-      "($_.CommandLine -match 'app-server' -and $_.CommandLine -notmatch 'listen stdio|analytics-default')" +
-      ") } | ForEach-Object { $_.ProcessId }";
+      "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine } | " +
+      "Select-Object ProcessId, ParentProcessId, CommandLine | ConvertTo-Json -Compress";
     const r = spawnSync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", script],
-      { encoding: "utf8", windowsHide: true },
+      { encoding: "utf8", windowsHide: true, maxBuffer: 32 * 1024 * 1024 },
     );
-    if (r.status === 0 && r.stdout) {
-      r.stdout
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean)
-        .forEach((p) => pids.add(Number(p)));
+    if (r.status !== 0 || !r.stdout.trim()) return [];
+    let rows;
+    try {
+      rows = JSON.parse(r.stdout);
+    } catch {
+      return [];
     }
-    return pids;
+    if (!Array.isArray(rows)) rows = [rows]; // a single match serialises as an object
+    return rows.map((p) => ({
+      pid: Number(p.ProcessId),
+      ppid: Number(p.ParentProcessId),
+      cmd: p.CommandLine || "",
+    }));
   }
-
-  const patterns = ["omp --mode rpc", "codex app-server"];
-  for (const pat of patterns) {
-    const r = spawnSync("pgrep", ["-f", pat], { encoding: "utf8" });
-    if (r.status === 0 && r.stdout) {
-      r.stdout
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean)
-        .forEach((p) => pids.add(Number(p)));
-    }
-  }
-  return pids;
+  const r = spawnSync("ps", ["-axo", "pid=,ppid=,command="], {
+    encoding: "utf8",
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (r.status !== 0 || !r.stdout) return [];
+  return r.stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+      return m ? { pid: Number(m[1]), ppid: Number(m[2]), cmd: m[3] } : null;
+    })
+    .filter(Boolean);
 }
 
-async function assertNoNewResidue(before, label) {
+/** Is this command line a synod-spawned agent backend (omp rpc / codex app-server)? */
+function isAgentCmd(cmd) {
+  if (!cmd || /powershell|pwsh/i.test(cmd)) return false; // exclude the query itself
+  if (/--mode rpc/.test(cmd)) return true; // omp / pi-coding-agent
+  // synod's codex app-server, NOT the OpenAI Codex desktop app servers (those
+  // carry --listen stdio / --analytics-default-enabled; synod's npm codex doesn't).
+  if (/app-server/.test(cmd) && !/listen stdio|analytics-default/.test(cmd))
+    return true;
+  return false;
+}
+
+/** omp/codex PIDs whose ancestor chain includes rootPid (our CLI). */
+function agentPidsUnder(rootPid) {
+  const out = new Set();
+  if (!rootPid) return out;
+  const table = processTable();
+  const byPid = new Map(table.map((p) => [p.pid, p]));
+  for (const p of table) {
+    if (!isAgentCmd(p.cmd)) continue;
+    let cur = p;
+    for (let hops = 0; cur && hops < 64; hops++) {
+      if (cur.pid === rootPid || cur.ppid === rootPid) {
+        out.add(p.pid);
+        break;
+      }
+      cur = byPid.get(cur.ppid);
+    }
+  }
+  return out;
+}
+
+function isAlive(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM"; // exists but not permitted to signal
+  }
+}
+
+/**
+ * Start tracking agent PIDs spawned under rootPid. Polls the process tree while
+ * the CLI runs, unioning every descendant agent PID seen into `acc`. Returns a
+ * handle; call .stop() then assertNoResidue(handle, label) after the CLI exits.
+ */
+function trackAgents(rootPid) {
+  const acc = new Set();
+  const handle = { acc, rootPid, _stopped: false, stop() { this._stopped = true; } };
+  (async () => {
+    while (!handle._stopped) {
+      try {
+        for (const pid of agentPidsUnder(rootPid)) acc.add(pid);
+      } catch {
+        // A transient process-table query failure must not kill the poller.
+      }
+      await sleep(1000);
+    }
+  })();
+  return handle;
+}
+
+async function assertNoResidue(tracked, label) {
+  if (tracked) tracked.stop();
   await sleep(500);
-  const after = getAgentPids();
-  const fresh = [...after].filter((p) => !before.has(p));
-  if (fresh.length > 0) {
-    fail(`${label} residue`, `new agent PIDs: ${fresh.join(", ")}`);
+  if (!tracked) {
+    pass(`${label} no residue`);
+    return;
+  }
+  // One last capture in case an agent spawned right before exit.
+  for (const pid of agentPidsUnder(tracked.rootPid)) tracked.acc.add(pid);
+  // A recorded PID counts as residue only if it is STILL alive AND still an agent
+  // process — re-checking the live command line guards against the recorded PID
+  // having been recycled by an unrelated process after our agent exited.
+  const liveCmd = new Map(processTable().map((p) => [p.pid, p.cmd]));
+  const leaked = [...tracked.acc].filter(
+    (pid) => isAlive(pid) && isAgentCmd(liveCmd.get(pid) || ""),
+  );
+  if (leaked.length > 0) {
+    fail(`${label} residue`, `synod-spawned agent PIDs survived: ${leaked.join(", ")}`);
   } else {
     pass(`${label} no residue`);
   }
@@ -195,7 +281,6 @@ async function test_A1(ompOk) {
     return;
   }
 
-  const before = getAgentPids();
   let result;
   try {
     result = await runCli(["--agent", "omp"], {
@@ -226,7 +311,7 @@ async function test_A1(ompOk) {
     pass("A1 clean exit");
   }
 
-  await assertNoNewResidue(before, "A1");
+  await assertNoResidue(result.tracker, "A1");
 }
 
 async function test_A2(ompOk, codexOk) {
@@ -236,7 +321,6 @@ async function test_A2(ompOk, codexOk) {
     return;
   }
 
-  const before = getAgentPids();
 
   // Distinctive prompts that force each agent to emit a unique marker word.
   // This makes cross-talk trivially detectable: OCEAN must only appear in
@@ -300,7 +384,7 @@ async function test_A2(ompOk, codexOk) {
   if (result.code === 0) pass("A2 exit 0");
   else fail("A2 exit", `exit code ${result.code}`);
 
-  await assertNoNewResidue(before, "A2");
+  await assertNoResidue(result.tracker, "A2");
 }
 
 async function test_A3(ompOk) {
@@ -310,7 +394,6 @@ async function test_A3(ompOk) {
     return;
   }
 
-  const before = getAgentPids();
   let result;
   try {
     result = await runCli(["--agent", "omp"], {
@@ -340,13 +423,12 @@ async function test_A3(ompOk) {
   if (result.code === 0) pass("A3 exit 0");
   else fail("A3 exit", `code ${result.code}`);
 
-  await assertNoNewResidue(before, "A3");
+  await assertNoResidue(result.tracker, "A3");
 }
 
 async function test_A4_omp_bin() {
   console.log("\n── A4a OMP_BIN=/nonexistent → non-zero exit ──");
 
-  const before = getAgentPids();
 
   const result = await runCli(["--agent", "omp"], {
     envExtra: { OMP_BIN: "/nonexistent" },
@@ -357,7 +439,7 @@ async function test_A4_omp_bin() {
   if (result.code !== 0) pass("A4a non-zero exit");
   else fail("A4a exit", `expected non-zero, got ${result.code}`);
 
-  await assertNoNewResidue(before, "A4a");
+  await assertNoResidue(result.tracker, "A4a");
 }
 
 async function test_A4_sigint(ompOk) {
@@ -377,13 +459,12 @@ async function test_A4_sigint(ompOk) {
     return;
   }
 
-  const before = getAgentPids();
-
   return new Promise((resolve) => {
     const child = spawn(NODE, [CLI, "--agent", "omp"], {
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env,
     });
+    const tracker = trackAgents(child.pid);
 
     let stdout = "";
     let stderr = "";
@@ -421,7 +502,7 @@ async function test_A4_sigint(ompOk) {
       }
 
       // (c) No residue
-      await assertNoNewResidue(before, "A4b");
+      await assertNoResidue(tracker, "A4b");
       resolve();
     });
 
@@ -483,7 +564,6 @@ async function test_A5(ompOk) {
     return;
   }
 
-  const before = getAgentPids();
 
   const MODEL = "minimax-code-cn/MiniMax-M3";
   const EFFORT = "high";
@@ -507,7 +587,7 @@ async function test_A5(ompOk) {
   if (result.code === 0) pass("A5 exit 0");
   else fail("A5 exit", `code ${result.code}`);
 
-  await assertNoNewResidue(before, "A5");
+  await assertNoResidue(result.tracker, "A5");
 }
 
 async function test_A6_routing(ompOk, codexOk) {
@@ -517,7 +597,6 @@ async function test_A6_routing(ompOk, codexOk) {
     return;
   }
 
-  const before = getAgentPids();
 
   let result;
   try {
@@ -594,7 +673,7 @@ async function test_A6_routing(ompOk, codexOk) {
   if (result.code === 0) pass("A6 exit 0");
   else fail("A6 exit", `code ${result.code}`);
 
-  await assertNoNewResidue(before, "A6");
+  await assertNoResidue(result.tracker, "A6");
 }
 
 async function test_A7_ctrld(ompOk) {
@@ -604,13 +683,12 @@ async function test_A7_ctrld(ompOk) {
     return;
   }
 
-  const before = getAgentPids();
-
   return new Promise((resolve) => {
     const child = spawn(NODE, [CLI, "--agent", "omp"], {
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env,
     });
+    const tracker = trackAgents(child.pid);
 
     let stdout = "";
     let stderr = "";
@@ -653,7 +731,7 @@ async function test_A7_ctrld(ompOk) {
         fail("A7 exit", `code=${code} signal=${signal}, expected code=0 signal=null`);
       }
 
-      await assertNoNewResidue(before, "A7");
+      await assertNoResidue(tracker, "A7");
       resolve();
     });
 
@@ -704,7 +782,6 @@ async function test_A8_relay(ompOk, codexOk) {
     return;
   }
 
-  const before = getAgentPids();
 
   let result;
   try {
@@ -742,7 +819,7 @@ async function test_A8_relay(ompOk, codexOk) {
   // Exit clean
   if (result.code === 0) pass("A8 exit 0");
   else fail("A8 exit", `code ${result.code}`);
-  await assertNoNewResidue(before, "A8");
+  await assertNoResidue(result.tracker, "A8");
 }
 
 // ── Phase E: mesh orchestration e2e ──────────────────────────────────────
@@ -759,7 +836,6 @@ async function test_E1_mesh_off(ompOk) {
     return;
   }
 
-  const before = getAgentPids();
   let result;
   try {
     result = await runCli(["--agent", "omp"], {
@@ -781,7 +857,7 @@ async function test_E1_mesh_off(ompOk) {
   if (result.code === 0) pass("E1 exit 0");
   else fail("E1 exit", `code ${result.code}`);
 
-  await assertNoNewResidue(before, "E1");
+  await assertNoResidue(result.tracker, "E1");
 }
 
 /**
@@ -800,7 +876,6 @@ async function test_E2_mesh_open_child(ompOk, codexOk) {
     return;
   }
 
-  const before = getAgentPids();
   let result;
   try {
     result = await runCli(["--agent", "codex"], {
@@ -851,7 +926,7 @@ async function test_E2_mesh_open_child(ompOk, codexOk) {
   if (result.code === 0) pass("E2 exit 0");
   else fail("E2 exit", `code ${result.code}`);
 
-  await assertNoNewResidue(before, "E2");
+  await assertNoResidue(result.tracker, "E2");
 }
 
 /**
@@ -884,7 +959,6 @@ async function test_E3_mesh_guardrails(ompOk, codexOk) {
     return;
   }
 
-  const before = getAgentPids();
   let result;
   try {
     result = await runCli(["--agent", "codex"], {
@@ -959,7 +1033,7 @@ async function test_E3_mesh_guardrails(ompOk, codexOk) {
   // (no codex#2, exit 0) already gate E3 pass.  Missing both just means
   // the diagnostic markers weren't hit, which is fine.
 
-  await assertNoNewResidue(before, "E3");
+  await assertNoResidue(result.tracker, "E3");
 
   if (!e3Ok) {
     // residue check may have already added a fail; ensure the test
@@ -986,7 +1060,6 @@ async function test_E4_false_positive_immunity(ompOk, codexOk) {
     return;
   }
 
-  const before = getAgentPids();
   let result;
   try {
     result = await runCli(["--agent", "codex"], {
@@ -1039,7 +1112,7 @@ async function test_E4_false_positive_immunity(ompOk, codexOk) {
   if (result.code === 0) pass("E4 exit 0");
   else fail("E4 exit", `code ${result.code}`);
 
-  await assertNoNewResidue(before, "E4");
+  await assertNoResidue(result.tracker, "E4");
 }
 
 // ── main ───────────────────────────────────────────────────────────────
