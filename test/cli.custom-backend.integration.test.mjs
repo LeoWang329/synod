@@ -14,7 +14,7 @@ const FIX = resolve(fileURLToPath(import.meta.url), "..", "..", "fixtures", "bac
 // synod 包根:flow 文件只许 import "synod/flow",tmp 工程外解析不到,
 // 故在工程里建 node_modules/synod 软链(真实用户工程就这样装依赖)。
 // Node 默认按 realpath 去重,软链与包内文件解析到同一规范路径,
-// runner 的 setCurrentRuntime 与 flow 的 getCurrentRuntime 共享同一模块态。
+// runner 的 runWithRuntime 与 flow 的 getCurrentRuntime 共享同一 AsyncLocalStorage 模块态。
 const PKG_ROOT = resolve(fileURLToPath(import.meta.url), "..", "..");
 
 function makeEnv() {
@@ -69,7 +69,7 @@ test("flow:经 profile 调用假 CLI", async () => {
   mkdirSync(join(proj, "workflows"));
   // 让 flow 文件的 import "synod/flow" 在 tmp 工程里可解析。
   mkdirSync(join(proj, "node_modules"), { recursive: true });
-  symlinkSync(PKG_ROOT, join(proj, "node_modules", "synod"), "dir");
+  symlinkSync(PKG_ROOT, join(proj, "node_modules", "synod"), "junction");
   writeFileSync(join(proj, "workflows", "echo-flow.mjs"), `
 import { agent } from "synod/flow";
 export const meta = { description: "echo via profile" };
@@ -99,7 +99,7 @@ test("flowMain 传入已注册 config 时不重复注册(REPL /flow 场景不再
   mkdirSync(join(proj, "workflows"));
   // 让 flow 文件的 import "synod/flow" 在 tmp 工程里可解析(同上一用例)。
   mkdirSync(join(proj, "node_modules"), { recursive: true });
-  symlinkSync(PKG_ROOT, join(proj, "node_modules", "synod"), "dir");
+  symlinkSync(PKG_ROOT, join(proj, "node_modules", "synod"), "junction");
   writeFileSync(join(proj, "workflows", "echo-flow.mjs"), `
 import { agent } from "synod/flow";
 export const meta = { description: "echo via profile" };

@@ -63,7 +63,7 @@ test("headless 钩子:onDone 在非 TTY flow 运行后照常触发", async () =>
   const { home, proj } = makeProj(`hooks: { onDone: ${JSON.stringify(hookCmd)} },`);
   mkdirSync(join(proj, "workflows"));
   mkdirSync(join(proj, "node_modules"), { recursive: true });
-  symlinkSync(PKG_ROOT, join(proj, "node_modules", "synod"), "dir");
+  symlinkSync(PKG_ROOT, join(proj, "node_modules", "synod"), "junction");
   writeFileSync(join(proj, "workflows", "echo-flow.mjs"), `
 import { agent } from "synod/flow";
 export const meta = { description: "echo via profile" };

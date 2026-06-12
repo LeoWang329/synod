@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import { resolve } from "node:path";
 import { openBackend } from "../src/backend.mjs";
-import { makeFakeOmpProc } from "./helpers/fake-backend.mjs";
+import { makeFakeOmpProc, makeFakeCodexProc } from "./helpers/fake-backend.mjs";
 import { MESH_INSTRUCTIONS } from "../src/mesh-instructions.mjs";
 import { PassThrough } from "node:stream";
 
@@ -159,7 +159,7 @@ describe("openBackend omp contract", () => {
   });
 
   it("on('error') receives error when omp emits error event on stdout", async () => {
-    const proc = makeFakeOmpProc({ errorMsgAfterReady: "simulated omp crash" });
+    const proc = makeFakeOmpProc();
     const session = await openBackend({
       agent: "omp",
       cwd: "/tmp",
@@ -169,6 +169,14 @@ describe("openBackend omp contract", () => {
     const errorPromise = new Promise((resolve) => {
       session.on("error", (err) => resolve(err));
     });
+
+    // Emit the error line only AFTER the listener is attached. #emitError drops
+    // errors when there is no listener (intentional — see the "no 'error'
+    // listener" test below), so a timer-based emission that races subscription
+    // would be silently lost. On Windows the ~15.6ms timer granularity collapses
+    // the old ready(+5ms)/error(+15ms) gap into one tick, making that race a
+    // deterministic hang. Pushing synchronously here removes the race entirely.
+    proc.pushLine({ type: "error", message: "simulated omp crash" });
 
     const err = await errorPromise;
     assert.ok(err instanceof Error);
@@ -194,6 +202,79 @@ describe("openBackend omp contract", () => {
       session.status === "idle" || session.status === "closed",
       `session should still be alive, got status=${session.status}`,
     );
+
+    await session.close();
+  });
+
+  it("surfaces a turn-level provider error (stopReason:error) instead of swallowing it", async () => {
+    // OMP reports a model-API failure (e.g. 402 Insufficient Balance) by ending
+    // the turn with stopReason:"error" + errorStatus on the assistant message —
+    // NOT a top-level {type:"error"} line. The session must surface it as an
+    // 'error' event rather than completing as a silent empty turn.
+    const proc = makeFakeOmpProc({
+      turnError: { errorStatus: 402, errorMessage: "402 Insufficient Balance" },
+    });
+    const session = await openBackend({
+      agent: "omp",
+      cwd: "/tmp",
+      spawnImpl: () => proc,
+    });
+
+    const errorPromise = new Promise((resolve) => session.on("error", resolve));
+    await session.send("hi"); // non-blocking (REPL streaming path)
+    const err = await errorPromise;
+
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /402 Insufficient Balance/);
+    assert.strictEqual(err.errorStatus, 402);
+    assert.match(session.lastError, /402/);
+
+    await session.close();
+  });
+
+  it("send({wait:true}) rejects when the turn ends in a provider error", async () => {
+    const proc = makeFakeOmpProc({
+      turnError: { errorStatus: 402, errorMessage: "402 Insufficient Balance" },
+    });
+    const session = await openBackend({
+      agent: "omp",
+      cwd: "/tmp",
+      spawnImpl: () => proc,
+    });
+    // Attach a no-op listener so the emitted 'error' doesn't crash the process.
+    session.on("error", () => {});
+
+    await assert.rejects(
+      session.send("hi", { wait: true }),
+      /402 Insufficient Balance/,
+    );
+
+    await session.close();
+  });
+
+  it("surfaces a turn-level provider error delivered via turn_end (message.message)", async () => {
+    // Same failure, but reported on a turn_end event (single `message`) rather
+    // than agent_end (`messages` array) — covers the other extraction branch.
+    const proc = makeFakeOmpProc({
+      turnError: {
+        via: "turn_end",
+        errorStatus: 429,
+        errorMessage: "429 Rate limited",
+      },
+    });
+    const session = await openBackend({
+      agent: "omp",
+      cwd: "/tmp",
+      spawnImpl: () => proc,
+    });
+
+    const errorPromise = new Promise((resolve) => session.on("error", resolve));
+    await session.send("hi");
+    const err = await errorPromise;
+
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /429 Rate limited/);
+    assert.strictEqual(err.errorStatus, 429);
 
     await session.close();
   });
@@ -501,5 +582,50 @@ describe("CodexSession mesh injection", () => {
     // Must NOT use baseInstructions (replacement)
     assert.ok(!("baseInstructions" in msg.params),
       "must not use baseInstructions (replacement), use developerInstructions");
+  });
+});
+
+// Asymmetry guard: OmpSession used to swallow a provider error embedded in a
+// turn-ending event (the 402 bug). CodexSession reports turn failure via the
+// turn `status`, which IS inspected — these tests pin that it is surfaced as an
+// 'error' event (and a wait/sync rejection), so the asymmetry stays closed.
+describe("CodexSession contract — turn error surfacing", () => {
+  it("surfaces a turn error via turn/completed (status:failed) — not swallowed", async () => {
+    const proc = makeFakeCodexProc({
+      turnStartStatus: "in_progress",
+      turnError: { via: "completed", status: "failed" },
+    });
+    const session = await openBackend({
+      agent: "codex",
+      cwd: "/tmp",
+      spawnImpl: () => proc,
+    });
+
+    const errorPromise = new Promise((resolve) => session.on("error", resolve));
+    // Non-blocking send; the failure arrives asynchronously on turn/completed.
+    await session.send("hi").catch(() => {});
+    const err = await errorPromise;
+
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /codex turn failed/);
+    assert.match(session.lastError, /codex turn failed/);
+
+    await session.close();
+  });
+
+  it("a turn/start returning a terminal failed status rejects send() and emits 'error'", async () => {
+    const proc = makeFakeCodexProc({ turnStartStatus: "failed" });
+    const session = await openBackend({
+      agent: "codex",
+      cwd: "/tmp",
+      spawnImpl: () => proc,
+    });
+
+    const errorPromise = new Promise((resolve) => session.on("error", resolve));
+    await assert.rejects(session.send("hi"), /codex turn failed/);
+    const err = await errorPromise;
+    assert.match(err.message, /codex turn failed/);
+
+    await session.close();
   });
 });

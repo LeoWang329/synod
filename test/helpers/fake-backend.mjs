@@ -105,6 +105,10 @@ export function makeFakeOmpProc(opts = {}) {
     // Multi-segment: each inner array is a segment; turn_start emitted between them.
     // get_last_assistant_text returns only the LAST segment's text (simulates the bug).
     responseSegments = null,    // string[][] — overrides responseDeltas when set
+    // Provider/turn error: ack the prompt, start the turn, emit NO deltas, then end
+    // the turn with stopReason:"error" embedded — exactly how real OMP surfaces a
+    // model-API failure (e.g. 402 Insufficient Balance) on agent_end.
+    turnError = null,           // { errorStatus, errorMessage } | null
   } = opts;
 
   let accumulatedText = "";
@@ -164,6 +168,11 @@ export function makeFakeOmpProc(opts = {}) {
   function pushLine(obj) {
     stdout.push(JSON.stringify(obj) + "\n");
   }
+  // Test hook: deterministically push a JSONL line onto stdout *now*, with no
+  // timer involved. Lets tests emit an event only AFTER attaching a listener,
+  // avoiding the errorMsgAfterReady timer race (which Windows's ~15.6ms clock
+  // granularity turns into a lost-error hang).
+  proc.pushLine = pushLine;
 
   function respond(id, data) {
     pushLine({ id, type: "response", data });
@@ -187,6 +196,33 @@ export function makeFakeOmpProc(opts = {}) {
           success: false,
           error: "simulated prompt failure",
         });
+        return;
+      }
+      if (turnError) {
+        // Ack, start the turn, no deltas, then end with stopReason:"error"
+        // embedded on the assistant message (real OMP shape for a 402 etc.).
+        // turnError.via picks the end-event shape: "agent_end" carries a
+        // `messages` array (default), "turn_end" carries a single `message`.
+        pushLine({ id: msg.id, type: "response" });
+        pushLine({ type: "agent_start" });
+        const errAssistant = {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorStatus: turnError.errorStatus,
+          errorMessage: turnError.errorMessage,
+        };
+        if (turnError.via === "turn_end") {
+          pushLine({ type: "turn_end", message: errAssistant, toolResults: [] });
+        } else {
+          pushLine({
+            type: "agent_end",
+            messages: [
+              { role: "user", content: [{ type: "text", text: "" }] },
+              errAssistant,
+            ],
+          });
+        }
         return;
       }
       // Acknowledge the prompt
@@ -264,6 +300,109 @@ export function makeFakeOmpProc(opts = {}) {
     setTimeout(() => {
       pushLine({ type: "error", message: errorMsgAfterReady });
     }, readyDelay + 10);
+  }
+
+  return proc;
+}
+
+// ── makeFakeCodexProc — fake `codex app-server` (JSON-RPC over stdio) ───
+// Drives CodexSession through its real handshake (initialize → initialized →
+// thread/start) and turn lifecycle (turn/start → turn/completed) so contract
+// tests can assert how CodexSession surfaces a turn-level failure WITHOUT a real
+// codex. Mirrors the line-delimited JSON-RPC the app-server speaks: requests get
+// a `{ id, result }` reply; notifications are `{ method, params }`.
+//
+// opts:
+//   turnStartStatus  — status returned in the turn/start RESPONSE. A terminal
+//                      status ("failed"/"completed"/…) settles the turn
+//                      synchronously inside send(); "in_progress" keeps it live
+//                      so an async turn/completed notification drives it.
+//   turnError        — null | { via?: "completed"|"error", status?, message? }.
+//                      When set with via "completed" (default), emit an async
+//                      turn/completed notification carrying `status` (default
+//                      "failed"); with via "error", emit an `error` notification.
+export function makeFakeCodexProc(opts = {}) {
+  const { turnStartStatus = "in_progress", turnError = null } = opts;
+  const THREAD_ID = "thread-fake";
+  const TURN_ID = "turn-fake";
+
+  const stdin = new Writable({
+    write(chunk, encoding, callback) {
+      for (const line of chunk.toString().split("\n")) {
+        const t = line.trim();
+        if (!t) continue;
+        let msg;
+        try {
+          msg = JSON.parse(t);
+        } catch {
+          continue;
+        }
+        process.nextTick(() => handleMessage(msg));
+      }
+      callback();
+    },
+  });
+  const stdout = new Readable({ read() {} });
+  const stderr = new Readable({ read() {} });
+
+  const proc = new EventEmitter();
+  proc.stdin = stdin;
+  proc.stdout = stdout;
+  proc.stderr = stderr;
+  proc.pid = null;
+  proc.exitCode = null;
+
+  const origEnd = stdin.end.bind(stdin);
+  stdin.end = function (...args) {
+    proc._closed = true;
+    return origEnd(...args);
+  };
+  proc._closed = false;
+
+  function push(obj) {
+    stdout.push(JSON.stringify(obj) + "\n");
+  }
+
+  function handleMessage(msg) {
+    const { id, method } = msg;
+    switch (method) {
+      case "initialize":
+        push({ id, result: {} });
+        return;
+      case "initialized":
+        return; // notification, no reply
+      case "thread/start":
+        push({ id, result: { thread: { id: THREAD_ID } } });
+        return;
+      case "turn/start":
+        push({
+          id,
+          result: { turn: { id: TURN_ID, status: turnStartStatus } },
+        });
+        if (turnError) {
+          if (turnError.via === "error") {
+            push({
+              method: "error",
+              params: {
+                threadId: THREAD_ID,
+                turn: { id: TURN_ID },
+                error: { message: turnError.message || "codex provider error" },
+              },
+            });
+          } else {
+            push({
+              method: "turn/completed",
+              params: {
+                threadId: THREAD_ID,
+                turn: { id: TURN_ID, status: turnError.status || "failed" },
+              },
+            });
+          }
+        }
+        return;
+      default:
+        if (id !== undefined) push({ id, result: {} }); // generic ack (turn/interrupt etc.)
+    }
   }
 
   return proc;
