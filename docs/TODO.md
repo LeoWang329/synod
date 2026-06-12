@@ -70,3 +70,7 @@
 
 - **E6 围栏 + relay 协同 e2e** —— 验证 agent 在 ` ```synod ``` ` 围栏里吐 `/relay a->b`,在本 turn 完成点建链、下一 turn 起生效(沿用现有 relay 时序)。本期 Phase E 标 deferred(真 agent 下可靠构造较难);接线逻辑已由 Tier1 [`control-wire.test.mjs`](../test/control-wire.test.mjs) 覆盖。
 - **持久化 / 恢复** —— flow 引擎的 `ctx` 已设计为纯数据可序列化(留门);整套会话 / flow 的持久化与崩溃恢复尚未做。
+
+## UI / 渲染(2026-06-12 用户试用反馈)
+
+- **行内实时流式(typewriter)** —— 现状:流式输出按**整行**出现(`createLineBuffer` `src/session-manager.mjs:12-31` 把 delta 攒到 `\n` 才带 `[label]` 前缀整行 `stdout.write`),同一行内看不到逐字增长,长行要到换行 / turn 末 `flush()` 才整段冒出来。**根因是有意设计**:行原子输出保证 `@all` 多会话时 `[omp#1]`/`[codex#1]` 不在行内交错串台(`scripts/acceptance.mjs` A2/A6 "no cross-talk" 断言依赖它)。**修复方向**:单会话(或当前只有一个会话在流式)走"label 打一次 + delta 续到同一行 + turn 末换行"的打字机模式,多会话并发回退到现行行原子模式——**别无脑删 line-buffer**,否则破坏多会话不串台这个核心卖点。渲染接线入口 `src/session-manager.mjs:164-165`(`session.on("delta", c => lineBuf.feed(c))`)。
