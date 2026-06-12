@@ -21,7 +21,7 @@ function setupFlow(body) {
   writeFileSync(join(proj, "workflows", "two.mjs"), body);
   // `import "synod/flow"` を tmp プロジェクトから解決可能にする
   mkdirSync(join(proj, "node_modules"), { recursive: true });
-  symlinkSync(PKG_ROOT, join(proj, "node_modules", "synod"), "dir");
+  symlinkSync(PKG_ROOT, join(proj, "node_modules", "synod"), "junction");
   const runsRoot = mkdtempSync(join(tmpdir(), "synod-resume-runs-"));
   return { proj, runsRoot };
 }
@@ -86,7 +86,7 @@ function setupApproveFlow() {
   mkdirSync(join(proj, "workflows"));
   writeFileSync(join(proj, "workflows", "appr.mjs"), APPROVE_FLOW);
   mkdirSync(join(proj, "node_modules"), { recursive: true });
-  symlinkSync(PKG_ROOT, join(proj, "node_modules", "synod"), "dir");
+  symlinkSync(PKG_ROOT, join(proj, "node_modules", "synod"), "junction");
   const runsRoot = mkdtempSync(join(tmpdir(), "synod-hl-runs-"));
   return { proj, runsRoot };
 }
