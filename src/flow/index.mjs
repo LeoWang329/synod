@@ -2,7 +2,7 @@
  * synod/flow — public API for flow files.
  *
  * Every export is a proxy that delegates to the current runtime
- * (set by the runner via setCurrentRuntime).  Flows never touch
+ * (set by the runner via runWithRuntime).  Flows never touch
  * the runtime directly; ctx remains pure data.
  */
 import { getCurrentRuntime } from "./current-run.mjs";
