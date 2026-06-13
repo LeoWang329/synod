@@ -183,7 +183,7 @@ async function openSession({ agent, model, effort, write, mesh, systemPrompt, cw
  * @param {(label: string, result: object) => void} [opts.onTurnComplete] — called when a turn completes successfully (with the send result)
  * @param {boolean} [opts.errorLeadingNewline] — if true, prefix error lines with "\n" (interactive); default false (runTasks)
  */
-function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaults, onIdle, onTurnComplete, errorLeadingNewline = false, relays, env = process.env }) {
+function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaults, onIdle, onTurnComplete, onSessionOpen, renderOutput = true, errorLeadingNewline = false, relays, env = process.env }) {
   const _sessions = new Map(); // label → { session, agent, model, effort, lineBuf, sendQueue }
   let _currentLabel = null;
   let _pendingOpens = 0;
@@ -191,6 +191,8 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
   const _defaults = { model: undefined, effort: undefined, write: false, mesh: false, ...defaults };
   const _onIdle = onIdle || (() => {});
   const _onTurnComplete = onTurnComplete || null;
+  const _onSessionOpen = onSessionOpen || null;
+  const _renderOutput = renderOutput !== false;
   const _nl = errorLeadingNewline ? "\n" : "";
   const _relays = relays || (() => []);
   // Shared output mux: per-session channels coordinate typewriter vs
@@ -248,7 +250,7 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
       const useColor = enabled(stdout, env);
       const colorize = useColor ? (s) => color(labelColor(label), s) : null;
       const lineBuf = _mux.register(label, { colorize });
-      session.on("delta", (chunk) => lineBuf.feed(chunk));
+      if (_renderOutput) session.on("delta", (chunk) => lineBuf.feed(chunk));
       session.on("error", (err) => {
         stderr.write(`${_nl}[${label} error] ${err.message}\n`);
       });
@@ -259,7 +261,7 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
           lineBuf.startTurn();
         } else if (status === "idle") {
           lineBuf.endTurn();
-          if (useColor && _turnStartAt != null) {
+          if (_renderOutput && useColor && _turnStartAt != null) {
             const secs = ((Date.now() - _turnStartAt) / 1000).toFixed(1);
             stdout.write(turnBoundary(label, secs));
             _turnStartAt = null;
@@ -281,6 +283,10 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
         sendQueue: createSendQueue(session, label, captureAndForward),
       });
       if (setCurrent) _currentLabel = label;
+
+      // TUI/外部消费者钩子:session 已建好、核心 listener 已接好;交出 (label, session)
+      // 供 TUI store 附加渲染监听。纯加法、默认 no-op,不改既有行为。
+      if (_onSessionOpen) { try { _onSessionOpen(label, session); } catch {} }
 
       if (announce === "interactive") {
         stdout.write(`Opened ${label} (${agent})\n`);
