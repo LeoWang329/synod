@@ -43,7 +43,7 @@ npm run test:e2e  # 集成验收 A1–A5(= node scripts/acceptance.mjs;需本机
 
 ## 依赖
 
-- Node.js 20+,**零第三方依赖**。
+- Node.js 20+。**核心零第三方运行时包**——只用 `node:*` 内置(`node:test` 跑测试、ANSI 手写、进程清理走原生 `taskkill`/`ps`,不引 jest/chalk/commander)。注意这是**核心层的实现选择,非全局铁律**,且与「synod 自包含、不复用 agent-bridge 组件」是两回事:面向产品的上层按需引包——例如即将开发的**全屏 TUI 前端将用 [Ink](https://github.com/vadimdemedes/ink)**(Ink 覆盖不到处,如鼠标,再手写 ANSI 补)。
 - 本机的 **`omp` 和/或 `codex` CLI**(真正干活的 agent;backend 直接 spawn 它们)。
 - **跨平台**:macOS / Linux / Windows;进程清理按平台分支(POSIX `pgrep`/`ps`,Windows `taskkill`)。
 

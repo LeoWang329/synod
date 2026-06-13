@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>synod TUI — L3 v4(工具调用渲染)</title>
+<style>
+  :root{
+    --bg:#13141c; --win:#1a1b26; --panel:#16161e; --panel2:#1e2030;
+    --border:#2a2e42; --txt:#c0caf5; --dim:#565f89; --dim2:#787c99;
+    --blue:#7aa2f7; --green:#9ece6a; --yellow:#e0af68; --mag:#bb9af7;
+    --red:#f7768e; --cyan:#7dcfff; --orange:#ff9e64;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:"SF Mono","JetBrains Mono",Consolas,"Cascadia Code",monospace;padding:24px 18px 40px}
+  .page-title{max-width:1040px;margin:0 auto 6px;font-size:18px;color:#fff;font-weight:700}
+  .page-sub{max-width:1040px;margin:0 auto 18px;font-size:13px;color:var(--dim2);line-height:1.6}
+  .page-sub b{color:var(--cyan)}
+
+  .term{max-width:1040px;margin:0 auto;background:var(--win);border:1px solid var(--border);
+    border-radius:10px;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.5)}
+  .titlebar{display:flex;align-items:center;gap:8px;padding:9px 14px;background:#15151f;border-bottom:1px solid var(--border)}
+  .dot{width:11px;height:11px;border-radius:50%}
+  .dot.r{background:#f7768e}.dot.y{background:#e0af68}.dot.g{background:#9ece6a}
+  .title{flex:1;text-align:center;font-size:12.5px;color:var(--dim2);margin-right:40px}
+
+  .stage{display:flex;align-items:stretch;min-height:520px}
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .sidebar{width:262px;flex:none;background:#14151d;border-left:1px solid var(--border);display:flex;flex-direction:column}
+  .cap{font-size:10.5px;color:var(--blue);letter-spacing:.08em;text-transform:uppercase;padding:7px 12px 5px;border-bottom:1px solid var(--border);background:#15161f}
+  .cap.r{color:var(--mag)}
+
+  .fhead{padding:11px 14px;border-bottom:1px solid var(--border);background:var(--panel2)}
+  .fhead .row1{display:flex;align-items:center;gap:9px;font-size:14.5px}
+  .badge{width:9px;height:9px;border-radius:50%;flex:none}
+  .badge.run{background:var(--blue);box-shadow:0 0 8px var(--blue);animation:pulse 1.3s infinite}
+  .badge.done{background:var(--green)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .fhead .who{font-weight:700;color:var(--blue)}
+  .fhead .actv{margin-left:auto;font-size:11.5px;color:var(--blue)}
+  .fhead .row2{display:flex;font-size:11px;color:var(--dim2);margin-top:5px}
+  .fhead .row2 .q{margin-left:auto;color:var(--dim)}
+  .tag{display:inline-block;font-size:9px;color:#0d0f17;background:var(--dim);border-radius:3px;padding:0 4px;margin-left:6px;font-weight:700;vertical-align:1px}
+
+  .scroll{flex:1;overflow:auto}
+  .sec-h{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--dim2);padding:8px 14px 4px}
+  .sec-h .k{color:var(--txt);font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+  .ab{font-size:9px;color:#0d0f17;border-radius:3px;padding:0 5px;font-weight:700}
+  .ab.a{background:var(--blue)}.ab.c{background:var(--orange)}.ab.d{background:var(--cyan)}
+  .sec-b{padding:2px 14px 10px}
+  .msg{display:flex;gap:10px;margin:8px 0}
+  .msg .g{width:3px;border-radius:3px;flex:none}
+  .msg.user .g{background:var(--mag)} .msg.asst .g{background:var(--blue)}
+  .msg .who{font-size:10px;font-weight:700;margin-bottom:3px}
+  .msg.user .who{color:var(--mag)} .msg.asst .who{color:var(--blue)}
+  .msg .t{font-size:12.5px;line-height:1.65;margin:4px 0}
+  .cursor{display:inline-block;width:7px;height:13px;background:var(--blue);vertical-align:-2px;animation:blink 1.05s step-end infinite;margin-left:1px}
+  @keyframes blink{50%{opacity:0}}
+  .divider{display:flex;align-items:center;gap:9px;color:var(--dim);font-size:10.5px;margin:10px 0 2px}
+  .divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--border)}
+
+  /* tool-call widgets */
+  .tool{margin:7px 0;border:1px solid var(--border);border-radius:6px;background:#0f1018;overflow:hidden}
+  .tool-h{display:flex;align-items:center;gap:9px;padding:7px 11px;cursor:pointer;font-size:12px}
+  .tool-h:hover{background:#15161f}
+  .tool .ic{color:var(--cyan);width:13px;text-align:center;font-weight:700}
+  .tool .nm{font-weight:700;color:var(--txt)}
+  .tool .ar{color:var(--dim2);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+  .tool .st{font-size:11px;flex:none}
+  .st-run2{color:var(--blue)} .st-ok{color:var(--green)} .st-err{color:var(--red)}
+  .tool .cv{color:var(--dim);width:11px;text-align:center;flex:none}
+  .tool-b{border-top:1px solid var(--border);padding:8px 11px;font-size:11.5px;line-height:1.55;background:#0b0c13}
+  .tool-b .lab{color:var(--dim2);font-size:10px;text-transform:uppercase;letter-spacing:.05em;margin:2px 0 4px}
+  .add{color:var(--green)}.del{color:var(--red)}.ctx{color:var(--dim2)}
+  .out{color:var(--txt);white-space:pre-wrap}
+  .run-spin{display:inline-block;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* collapsed strips C/D */
+  .strips{border-top:1px solid var(--border);margin-top:4px}
+  .strip{display:flex;align-items:center;gap:9px;padding:9px 14px;font-size:12px;border-bottom:1px solid var(--border);cursor:pointer}
+  .strip:hover{background:#1a1c28}
+  .strip .chev{color:var(--dim);width:10px}
+  .strip .k{font-weight:700;color:var(--txt)}
+  .strip .sum{margin-left:auto;color:var(--dim);font-size:11px}
+  .strip .sum .ok{color:var(--green)} .strip .sum .lbl2{color:var(--orange)}
+  .strip.hot{background:rgba(255,158,100,.07)}
+  .newdot{width:6px;height:6px;border-radius:50%;background:var(--orange);box-shadow:0 0 7px var(--orange);animation:pulse 1.3s infinite}
+
+  .inputbar{display:flex;align-items:center;gap:9px;background:var(--panel2);border-top:1px solid var(--blue);padding:11px 14px}
+  .prompt{color:var(--green);font-weight:700;font-size:13px}.input-txt{font-size:13px}
+
+  .agents{flex:1;overflow:auto;padding:8px 8px 0}
+  .acard{border:1px solid transparent;border-radius:7px;padding:8px 9px;margin-bottom:7px;cursor:pointer}
+  .acard:hover{background:#1a1c28}
+  .acard.sel{background:var(--panel2);border-color:var(--blue);box-shadow:0 0 0 1px var(--blue)}
+  .acard .top{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600}
+  .acard .turn{margin-left:auto;font-size:10px;color:var(--dim);background:#0d0f17;border-radius:9px;padding:0 6px}
+  .acard .stt{font-size:10.5px;margin-top:3px}
+  .stt.run{color:var(--blue)} .stt.idle{color:var(--green)}
+  .acard .rel{font-size:10px;margin-top:3px}
+  .rel.out{color:var(--mag)} .rel.in{color:var(--dim2)}
+  .acard .last{font-size:10px;color:var(--dim);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-style:italic}
+  .relay-connect{height:10px;margin:-4px 0 0 16px;border-left:2px solid var(--mag);border-bottom:2px solid var(--mag);width:14px;border-bottom-left-radius:6px;opacity:.7}
+  .sbfoot{border-top:1px solid var(--border);padding:9px 12px;font-size:11px;display:flex}
+  .sbfoot .new{color:var(--blue)} .sbfoot .on{margin-left:auto;color:var(--green)}
+
+  .gstatus{display:flex;align-items:center;font-size:10.5px;color:var(--dim);padding:6px 14px;background:#14151d;border-top:1px solid var(--border)}
+  .gstatus b{color:var(--dim2)} .gstatus span{margin-right:15px} .gstatus .rt{margin-left:auto;color:var(--blue)}
+</style>
+</head>
+<body>
+  <div class="page-title">L3 v4 — 流式对话 + 工具调用渲染成卡片(点开看细节)</div>
+  <div class="page-sub">砍掉 F。重点在 <b>A 对话流</b>:agent 边流式吐、前端边渲染;遇到工具调用就渲染成 <b>工具卡片</b>(图标+名字+一句摘要+状态),默认收起,点开看参数/diff/输出。下面 ◇Read 收起、✎Edit 展开(看 diff)、$Bash 正在跑(转圈+实时输出)。C/D 仍是底部折叠条。</div>
+
+  <div class="term">
+    <div class="titlebar"><div class="dot r"></div><div class="dot y"></div><div class="dot g"></div>
+      <div class="title">synod · mesh — 3 sessions</div></div>
+
+    <div class="stage">
+      <div class="main">
+        <div class="cap">焦点 · omp#1 内部状态</div>
+        <div class="fhead">
+          <div class="row1"><span class="badge run"></span><span class="who">omp#1</span>
+            <span class="tag">E</span><span class="actv">● running · turn 4 · 17s<span class="tag">B</span></span></div>
+          <div class="row2"><span>omp · deepseek-v4-pro · effort high · ~/cc/synod</span><span class="q">queue 2 · 1.2k tok</span></div>
+        </div>
+
+        <div class="scroll">
+          <div class="sec-h"><span class="ab a">A</span><span class="k">对话流(流式)</span></div>
+          <div class="sec-b">
+            <div class="msg user"><div class="g"></div><div>
+              <div class="who">YOU</div>
+              <div class="t">分析 src/relay.mjs 的并发安全,有问题就改掉并跑测试。</div>
+            </div></div>
+
+            <div class="msg asst"><div class="g"></div><div style="flex:1">
+              <div class="who">OMP#1</div>
+              <div class="t">我先读一下 relay.mjs 的相关部分。</div>
+
+              <!-- collapsed tool -->
+              <div class="tool">
+                <div class="tool-h"><span class="cv">▸</span><span class="ic">◇</span>
+                  <span class="nm">Read</span><span class="ar">src/relay.mjs</span>
+                  <span class="st st-ok">✓ 47 lines</span></div>
+              </div>
+
+              <div class="t">确认了竞态:<code>chain</code> 在 <code>task.then</code> 之后才赋值,有一个窗口。我改掉:</div>
+
+              <!-- expanded tool: Edit + diff -->
+              <div class="tool">
+                <div class="tool-h"><span class="cv">▾</span><span class="ic" style="color:var(--orange)">✎</span>
+                  <span class="nm">Edit</span><span class="ar">src/relay.mjs · onTurnComplete</span>
+                  <span class="st st-ok">✓ +2 −1</span></div>
+                <div class="tool-b">
+                  <div class="lab">diff</div>
+                  <div class="del">- const chain = task.then(run)</div>
+                  <div class="add">+ chain = task.catch(() =&gt; {})   // 先占位,消除窗口</div>
+                  <div class="add">+ chain = chain.then(run)</div>
+                  <div class="ctx">  registry.onTurnComplete(label, text)</div>
+                </div>
+              </div>
+
+              <div class="t">跑回归测试验证:</div>
+
+              <!-- running tool: Bash streaming -->
+              <div class="tool">
+                <div class="tool-h"><span class="cv">▾</span><span class="ic" style="color:var(--green)">$</span>
+                  <span class="nm">Bash</span><span class="ar">npm test -- relay</span>
+                  <span class="st st-run2"><span class="run-spin">◐</span> running</span></div>
+                <div class="tool-b">
+                  <div class="lab">output</div>
+                  <div class="out">▸ relay-parse.test.mjs ........ ok
+▸ relay.test.mjs ............. ok
+▸ relay-registry.test.mjs ...<span class="cursor"></span></div>
+                </div>
+              </div>
+            </div></div>
+          </div>
+
+          <!-- collapsed strips: C / D (no F) -->
+          <div class="strips">
+            <div class="strip hot"><span class="chev">▸</span><span class="ab c">C</span><span class="k">编排意图</span>
+              <span class="newdot"></span>
+              <span class="sum">3 cmds · <span class="ok">✓</span> 新会话 <span class="lbl2">codex#1</span> · 回喂已发</span></div>
+            <div class="strip"><span class="chev">▸</span><span class="ab d">D</span><span class="k">relay 出入</span>
+              <span class="sum">▶ out codex#1 · ◀ in —</span></div>
+          </div>
+        </div>
+
+        <div class="inputbar"><span class="prompt">[omp#1] ❯</span>
+          <span class="input-txt">改完跑一下全量测试<span class="cursor"></span></span></div>
+      </div>
+
+      <div class="sidebar">
+        <div class="cap r">agents · 3 &nbsp;·&nbsp; ↹/点击 切换</div>
+        <div class="agents">
+          <div class="acard sel"><div class="top"><span class="badge run"></span>omp#1<span class="turn">t4</span></div>
+            <div class="stt run">● running · 17s</div><div class="rel out">▶ relay → codex#1</div>
+            <div class="last">$ npm test -- relay …</div></div>
+          <div class="relay-connect"></div>
+          <div class="acard"><div class="top"><span class="badge done"></span>codex#1<span class="turn">t3</span></div>
+            <div class="stt idle">✓ idle</div><div class="rel in">◀ from omp#1</div>
+            <div class="last">评审:错误路径漏处理…</div></div>
+          <div class="acard"><div class="top"><span class="badge done"></span>omp#2<span class="turn">t2</span></div>
+            <div class="stt idle">✓ idle</div><div class="last">测试已生成,3 passing</div></div>
+        </div>
+        <div class="sbfoot"><span class="new">+ ^O 新会话</span><span class="on">mesh on</span></div>
+      </div>
+    </div>
+
+    <div class="gstatus"><span><b>↹</b> 切焦点</span><span><b>^O</b> 开</span><span><b>^W</b> 关</span>
+      <span><b>/</b> 命令</span><span><b>^C</b> 中断</span><span class="rt">● 1 running · mesh on</span></div>
+  </div>
+</body>
+</html>

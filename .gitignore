@@ -14,3 +14,6 @@ coverage/
 # Flow engine runtime artifacts (generated at project root)
 /run.log.jsonl
 /artifacts/
+
+# 头脑风暴可视化伴随的临时产物(每会话一目录)
+.superpowers/
