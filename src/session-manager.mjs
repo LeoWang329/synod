@@ -251,8 +251,10 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
       const colorize = useColor ? (s) => color(labelColor(label), s) : null;
       const lineBuf = _mux.register(label, { colorize });
       if (_renderOutput) session.on("delta", (chunk) => lineBuf.feed(chunk));
+      // listener 始终挂着(避免 EventEmitter 'error' 无监听器抛错);写 stderr 用 _renderOutput 门控:
+      // TUI(renderOutput:false)下由 store 直接订阅 session 'error' 自渲染,sm 不再写 cap,避免重复显示(codex 评审)。
       session.on("error", (err) => {
-        stderr.write(`${_nl}[${label} error] ${err.message}\n`);
+        if (_renderOutput) stderr.write(`${_nl}[${label} error] ${err.message}\n`);
       });
       let _turnStartAt = null;
       session.on("status", ({ status }) => {

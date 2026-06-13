@@ -43,3 +43,19 @@ test("renderOutput 默认 true:模型 delta 仍写 stdout(不回归)", async () 
   session.emit("delta", "正常渲染");
   assert.ok(stdout.buf.includes("正常渲染"));
 });
+
+test("renderOutput:false 时,session error 不写 stderr(由 TUI store 直接订阅渲染,避免重复)", async () => {
+  const { sm, stderr } = mk({ renderOutput: false });
+  const label = await sm.open({ agent: "omp" });
+  const session = sm._sessions.get(label).session;
+  session.emit("error", new Error("boom-dedup"));   // listener 仍挂着 → 不抛;只是不写 stderr
+  assert.ok(!stderr.buf.includes("boom-dedup"));
+});
+
+test("renderOutput 默认 true:session error 仍写 stderr(不回归)", async () => {
+  const { sm, stderr } = mk();
+  const label = await sm.open({ agent: "omp" });
+  const session = sm._sessions.get(label).session;
+  session.emit("error", new Error("boom-visible"));
+  assert.ok(stderr.buf.includes("boom-visible"));
+});
