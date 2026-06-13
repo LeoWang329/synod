@@ -19,5 +19,13 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "htm": "^3.1.1",
+    "ink": "^7.0.6",
+    "react": "^19.2.7"
+  },
+  "devDependencies": {
+    "ink-testing-library": "^4.0.0"
   }
 }
