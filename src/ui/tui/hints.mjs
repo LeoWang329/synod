@@ -11,8 +11,10 @@ const OPEN_OPTS = ["--agent", "--model", "--effort", "--write", "--mesh", "--no-
 export function computeHints(line, ctx) {
   const labels = ctx.labels();
   if (/^\/\S*$/.test(line)) {
+    // 注意:`/` 单独输入时每个命令都以 `/` 开头 → filter 已列全部;非匹配前缀(如 `/zz`)应返回空,
+    // 不能回退倒出全表(codex 评审:旧 `items.length ? items : 全部` 会让 /zz 误列 13 条)。
     const items = SLASH.filter(([c]) => c.startsWith(line)).map(([value, desc]) => ({ value, desc }));
-    return { kind: "slash", items: items.length ? items : SLASH.map(([value, desc]) => ({ value, desc })) };
+    return { kind: "slash", items };
   }
   if (/^@\S*$/.test(line)) {
     const cands = ["@all", ...labels.map((l) => "@" + l)];

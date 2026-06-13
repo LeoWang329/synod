@@ -551,7 +551,7 @@ export function computeHints(line, ctx) {
   const labels = ctx.labels();
   if (/^\/\S*$/.test(line)) {
     const items = SLASH.filter(([c]) => c.startsWith(line)).map(([value, desc]) => ({ value, desc }));
-    return { kind: "slash", items: items.length ? items : SLASH.map(([value, desc]) => ({ value, desc })) };
+    return { kind: "slash", items }; // `/` 已列全部;非匹配前缀(/zz)返回空,不回退倒全表(codex 评审修正)
   }
   if (/^@\S*$/.test(line)) {
     const cands = ["@all", ...labels.map((l) => "@" + l)];
