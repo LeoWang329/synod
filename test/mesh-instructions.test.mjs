@@ -64,6 +64,19 @@ describe("MESH_INSTRUCTIONS fingerprints", () => {
   it("contains read-only or 只读", () => {
     assert.match(text, /read.only|只读/i);
   });
+
+  it("tells the agent fence results are fed back to it next turn", () => {
+    // The host injects each fence's outcome (created labels / rejections) back
+    // to the originating agent.  The doc must announce this AND use the same
+    // marker the injection uses, so the agent recognizes the message and can
+    // act on the returned labels — otherwise it /open's a child it can't address.
+    assert.match(text, /\[synod fence result\]/, "must reference the feedback marker");
+    assert.match(
+      text,
+      /back to you|fed back|following turn|回(?:喂|传|报)/i,
+      "must state results come back to the agent",
+    );
+  });
 });
 
 // ── Negative assertions (forbidden content must be absent) ──────────────

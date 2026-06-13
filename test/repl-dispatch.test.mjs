@@ -44,6 +44,8 @@ function fakeSm(opts = {}) {
     list: () => {
       calls.list++;
     },
+    lastTurnText: (label) =>
+      opts.lastTurnText && label in opts.lastTurnText ? opts.lastTurnText[label] : "",
     calls,
   };
 }
@@ -291,6 +293,69 @@ describe("dispatch / commands", () => {
     const r = await dispatch("/relays");
     assert.strictEqual(r.redraw, true);
     assert.ok(stdout.buf.includes("No active relay rules"));
+  });
+
+  // ── /forward (one-shot manual forward with note) ──────────────────────
+
+  it("/forward from->to NOTE enqueues from's last turn to to, attributed + noted", async () => {
+    const { dispatch, sm, stdout, stderr } = setup({
+      smOpts: { _sessions: [["omp#1", {}], ["codex#1", {}]], lastTurnText: { "omp#1": "the code" } },
+    });
+    const r = await dispatch("/forward omp#1->codex#1 review for bugs");
+    assert.strictEqual(r.redraw, true);
+    assert.strictEqual(sm.calls.enqueue.length, 1);
+    assert.strictEqual(sm.calls.enqueue[0].target, "codex#1");
+    assert.ok(
+      sm.calls.enqueue[0].msg.startsWith("[forward from omp#1] review for bugs\n\n"),
+      `msg should lead with attributed note header, got: ${JSON.stringify(sm.calls.enqueue[0].msg)}`,
+    );
+    assert.ok(sm.calls.enqueue[0].msg.includes("the code"), "forwarded text must be included");
+    assert.ok(stdout.buf.includes("Forwarded omp#1 -> codex#1"));
+    assert.strictEqual(stderr.buf, "");
+  });
+
+  it("/forward without note uses a bare attribution header", async () => {
+    const { dispatch, sm } = setup({
+      smOpts: { _sessions: [["omp#1", {}], ["codex#1", {}]], lastTurnText: { "omp#1": "X" } },
+    });
+    await dispatch("/forward omp#1->codex#1");
+    assert.strictEqual(sm.calls.enqueue[0].msg, "[forward from omp#1]\n\nX");
+  });
+
+  it("/forward with missing source session → stderr, no enqueue", async () => {
+    const { dispatch, sm, stderr } = setup({ smOpts: { _sessions: [["codex#1", {}]] } });
+    const r = await dispatch("/forward omp#1->codex#1 hi");
+    assert.strictEqual(r.redraw, true);
+    assert.ok(stderr.buf.includes('No session "omp#1"'));
+    assert.strictEqual(sm.calls.enqueue.length, 0);
+  });
+
+  it("/forward with missing target session → stderr, no enqueue", async () => {
+    const { dispatch, sm, stderr } = setup({
+      smOpts: { _sessions: [["omp#1", {}]], lastTurnText: { "omp#1": "X" } },
+    });
+    const r = await dispatch("/forward omp#1->codex#1 hi");
+    assert.strictEqual(r.redraw, true);
+    assert.ok(stderr.buf.includes('No session "codex#1"'));
+    assert.strictEqual(sm.calls.enqueue.length, 0);
+  });
+
+  it("/forward when source has no completed turn → stderr, no enqueue", async () => {
+    const { dispatch, sm, stderr } = setup({
+      smOpts: { _sessions: [["omp#1", {}], ["codex#1", {}]], lastTurnText: { "omp#1": "" } },
+    });
+    const r = await dispatch("/forward omp#1->codex#1 hi");
+    assert.strictEqual(r.redraw, true);
+    assert.ok(stderr.buf.includes("no completed turn"));
+    assert.strictEqual(sm.calls.enqueue.length, 0);
+  });
+
+  it("/forward with parse error → stderr, no enqueue", async () => {
+    const { dispatch, sm, stderr } = setup();
+    const r = await dispatch("/forward bad");
+    assert.strictEqual(r.redraw, true);
+    assert.ok(stderr.buf.includes("->"));
+    assert.strictEqual(sm.calls.enqueue.length, 0);
   });
 
   it("/use <label> calls sm.use and writes stdout on success", async () => {

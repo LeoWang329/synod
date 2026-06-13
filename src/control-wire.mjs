@@ -27,6 +27,9 @@ export function wireControl({ sm, registry, stderr, dispatch }) {
   // receives depth as an input parameter.
   const _depthMap = new Map();
   const _inflight = new Set();         // P1-11: 在飞 fence dispatch,供退出前排水
+  let _activity = 0;                   // 单调计数:已处理的「带 fence 的 turn」数。
+                                       // 关停排水循环用它判定「本轮是否又冒出新 fence」——
+                                       // sessionLoad 不够(回喂/`@目标`/被拒 /open 都不增会话数)。
 
   /**
    * Called after each turn completes.  Runs relay first (synchronous),
@@ -51,10 +54,17 @@ export function wireControl({ sm, registry, stderr, dispatch }) {
 
     if (!lines.length) return;
 
+    _activity += 1;   // 一个带 fence 的 turn = 一次控制活动(关停循环的「还在动」信号)
+
     // Fire-and-forget: dispatch runs asynchronously, errors do not
     // propagate to the turn-completion caller.
     const task = (async () => {
       const depth = _depthMap.get(label) ?? 0;
+
+      // Per-command outcome lines, fed back to the originating session so the
+      // agent learns the labels it created (/open) and any rejections — without
+      // this it opens a child it cannot address.  See feedback enqueue below.
+      const feedback = [];
 
       for (const line of lines) {
         let r;
@@ -63,15 +73,33 @@ export function wireControl({ sm, registry, stderr, dispatch }) {
         } catch {
           // Dispatch itself should not throw (all rejections are returned
           // as {ok:false}), but guard against unexpected errors.
+          feedback.push(`${line} → error: dispatch threw`);
           continue;
         }
 
         if (r && r.ok && r.label) {
           // Child session created — record its depth
           _depthMap.set(r.label, depth + 1);
+          feedback.push(`${line} → ok · session ${r.label}`);
+        } else if (r && r.ok) {
+          feedback.push(`${line} → ok`);
         } else if (r && !r.ok && r.reason) {
           stderr.write(`[control warn] ${r.reason}\n`);
+          feedback.push(`${line} → error: ${r.reason}`);
+        } else {
+          feedback.push(`${line} → error: unknown result`);
         }
+      }
+
+      // Close the loop: one consolidated, attributed message back to the
+      // originator.  Enqueue (not stderr) so it becomes the agent's next-turn
+      // context — the same channel relay uses.  A turn with no fence produces
+      // no feedback, so this does not perpetuate itself: it terminates when the
+      // agent stops emitting fences.  If the originator was closed meanwhile,
+      // sm.enqueue returns false and writes a "No session" diagnostic — safe,
+      // just discarded (the agent is gone, so there is nobody to inform).
+      if (feedback.length) {
+        sm.enqueue({ target: label, msg: `[synod fence result]\n${feedback.join("\n")}` });
       }
     })();
     _inflight.add(task);
@@ -88,6 +116,8 @@ export function wireControl({ sm, registry, stderr, dispatch }) {
   return {
     onTurnComplete,
     drainControl,
+    /** 单调控制活动计数:关停排水循环据此判定本轮是否又冒出新 fence。 */
+    controlActivity() { return _activity; },
     /** P2-25:会话 /close 时清其 depth 记录。 */
     dropLabel(label) { _depthMap.delete(label); },
   };

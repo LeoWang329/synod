@@ -24,6 +24,34 @@ export function parseRelay(input) {
 }
 
 /**
+ * Parse a one-shot forward specification: "<from>-><to> [note]".
+ *
+ * Unlike parseRelay (a standing rule), /forward is a manual, human-driven
+ * single hop that may carry a free-text note.  The note is everything after
+ * the target label and keeps its internal spacing.
+ *
+ * @param {string} input — e.g. "/forward omp#1->codex#1 review for bugs"
+ * @returns {{ from: string, to: string, note: string } | { error: string }}
+ */
+export function parseForward(input) {
+  const s = input.startsWith("/forward") ? input.slice("/forward".length) : input;
+  const trimmed = s.replace(/^\s+/, "");
+  const idx = trimmed.indexOf("->");
+  if (idx === -1) {
+    return { error: `forward must contain "->" (usage: /forward <from>-><to> [note])` };
+  }
+  const from = trimmed.slice(0, idx).trim();
+  const after = trimmed.slice(idx + 2).replace(/^\s+/, "");
+  const m = after.match(/^(\S+)([\s\S]*)$/);
+  const to = m ? m[1] : "";
+  const note = m ? m[2].trim() : "";
+  if (!from) return { error: "forward source label must not be empty" };
+  if (!to) return { error: "forward target label must not be empty" };
+  if (from === to) return { error: "forward source and target must differ" };
+  return { from, to, note };
+}
+
+/**
  * Create a relay registry.
  *
  * @param {(target: string, msg: string) => void} enqueue — called with the target

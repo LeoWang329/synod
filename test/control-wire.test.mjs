@@ -309,6 +309,86 @@ describe("wireControl fire-and-forget", () => {
   });
 });
 
+describe("wireControl fence result feedback", () => {
+  // A fence command's outcome (created label / rejection reason) must be fed
+  // back to the ORIGINATING session so the agent learns the labels it created
+  // and any errors — otherwise it opens a child it cannot address.  The
+  // feedback is one consolidated message enqueued to the originating label.
+  const flush = async () => { for (let i = 0; i < 3; i++) await new Promise(r => setImmediate(r)); };
+
+  it("successful /open → feedback enqueued to originator carrying the new label", async () => {
+    const sm = fakeSm({ _sessions: [["omp#1", {}]] });
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch({
+      "/open --agent codex|0": { ok: true, label: "codex#1" },
+    });
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    await onTurnComplete("omp#1", { text: "```synod\n/open --agent codex\n```" });
+    await flush();
+    assert.strictEqual(sm.calls.enqueue.length, 1, "exactly one feedback message");
+    const fb = sm.calls.enqueue[0];
+    assert.strictEqual(fb.target, "omp#1", "feedback goes to the originating session");
+    assert.ok(fb.msg.includes("[synod fence result]"), `attributed: ${fb.msg}`);
+    assert.ok(fb.msg.includes("codex#1"), `carries the new label: ${fb.msg}`);
+    assert.ok(fb.msg.includes("/open --agent codex"), `echoes the command: ${fb.msg}`);
+  });
+
+  it("rejected command → feedback carries the reason", async () => {
+    const sm = fakeSm({ _sessions: [["omp#1", {}]] });
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch({
+      "/open --write|0": { ok: false, reason: "write denied" },
+    });
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    await onTurnComplete("omp#1", { text: "```synod\n/open --write\n```" });
+    await flush();
+    assert.strictEqual(sm.calls.enqueue.length, 1);
+    assert.ok(sm.calls.enqueue[0].msg.includes("write denied"), `reason in feedback: ${sm.calls.enqueue[0].msg}`);
+  });
+
+  it("multiple commands → ONE consolidated feedback message, in order", async () => {
+    const sm = fakeSm({ _sessions: [["omp#1", {}]] });
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch({
+      "/open --agent codex|0": { ok: true, label: "codex#1" },
+      "@codex#1 hi|0": { ok: true },
+    });
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    await onTurnComplete("omp#1", { text: "```synod\n/open --agent codex\n@codex#1 hi\n```" });
+    await flush();
+    assert.strictEqual(sm.calls.enqueue.length, 1, "one message, not one-per-command");
+    const msg = sm.calls.enqueue[0].msg;
+    assert.ok(msg.indexOf("/open --agent codex") < msg.indexOf("@codex#1 hi"), "results in command order");
+  });
+
+  it("turn without any fence → no feedback enqueued", async () => {
+    const sm = fakeSm({ _sessions: [["omp#1", {}]] });
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const dispatch = fakeDispatch();
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch });
+    await onTurnComplete("omp#1", { text: "just prose, no fence" });
+    await flush();
+    assert.strictEqual(sm.calls.enqueue.length, 0);
+  });
+
+  it("dispatch throws → feedback still enqueued with an error line", async () => {
+    const sm = fakeSm({ _sessions: [["omp#1", {}]] });
+    const registry = fakeRegistry();
+    const stderr = captureStream();
+    const throwing = async () => { throw new Error("boom"); };
+    throwing.calls = [];
+    const { onTurnComplete } = wireControl({ sm, registry, stderr, dispatch: throwing });
+    await onTurnComplete("omp#1", { text: "```synod\n/open --agent omp\n```" });
+    await flush();
+    assert.strictEqual(sm.calls.enqueue.length, 1, "a thrown command still reports back");
+    assert.ok(/error/i.test(sm.calls.enqueue[0].msg), `error noted: ${sm.calls.enqueue[0].msg}`);
+  });
+});
+
 describe("wireControl empty/rejected paths", () => {
   it("empty lines from fence → silent", async () => {
     const sm = fakeSm();
@@ -368,6 +448,39 @@ describe("wireControl empty/rejected paths", () => {
     await assert.doesNotReject(() => onTurnComplete("omp#1", {}));
     assert.strictEqual(dispatch.calls.length, 0);
     assert.strictEqual(stderr.buf, "");
+  });
+});
+
+describe("wireControl controlActivity (shutdown quiescence signal)", () => {
+  // The cli onClose loop must observe control activity, not just sessionLoad:
+  // a feedback turn / @target turn / rejected /open creates control work
+  // without changing the session count.  controlActivity() is a monotonic
+  // counter of fence-bearing turns dispatched, so the loop can tell "a new
+  // fence was processed this round" and keep draining instead of breaking.
+  const flush = async () => { for (let i = 0; i < 3; i++) await new Promise(r => setImmediate(r)); };
+
+  it("starts at 0 and is unchanged by a fence-less turn", async () => {
+    const sm = fakeSm({ _sessions: [["omp#1", {}]] });
+    const { onTurnComplete, controlActivity } = wireControl({
+      sm, registry: fakeRegistry(), stderr: captureStream(), dispatch: fakeDispatch(),
+    });
+    assert.strictEqual(controlActivity(), 0);
+    await onTurnComplete("omp#1", { text: "just prose" });
+    await flush();
+    assert.strictEqual(controlActivity(), 0, "no fence → no activity");
+  });
+
+  it("increments once per fence-bearing turn", async () => {
+    const sm = fakeSm({ _sessions: [["omp#1", {}]] });
+    const { onTurnComplete, controlActivity } = wireControl({
+      sm, registry: fakeRegistry(), stderr: captureStream(), dispatch: fakeDispatch(),
+    });
+    await onTurnComplete("omp#1", { text: "```synod\n@omp#1 hi\n```" });
+    await flush();
+    assert.strictEqual(controlActivity(), 1, "one fence turn → 1");
+    await onTurnComplete("omp#1", { text: "```synod\n@omp#1 again\n```" });
+    await flush();
+    assert.strictEqual(controlActivity(), 2, "second fence turn → 2");
   });
 });
 

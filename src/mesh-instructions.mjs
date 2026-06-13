@@ -53,4 +53,17 @@ turn completes.
   slash command, non-label target, or broadcast-style target is
   rejected.  This includes \`/use\`, \`/exit\`, \`/quit\`,
   \`/sessions\`, \`/relays\`, \`/unrelay\`, and plain text.
-- Sibling session output and command results default back to the human.`;
+
+### Command results
+
+After your turn completes, the host executes the fence and then **feeds each
+command's outcome back to you** on a following turn, in a message prefixed with
+\`[synod fence result]\` (other already-queued messages, if any, may arrive
+first).  Each line reports one command: a successful
+\`/open\` reports the **new session label** (e.g. \`session codex#1\`), and a
+rejected command reports the reason.  Use the returned labels to address those
+sessions with \`@<label>\` on a subsequent turn — you cannot reference a child's
+label in the same fence that creates it.
+
+A sibling session's own reply text still defaults back to the human unless you
+set up a \`/relay\` to route it to you.`;

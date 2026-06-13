@@ -46,7 +46,9 @@ test("非 TTY REPL:零 ANSI 噪音 + 提示符仍为 '> '", async () => {
     const code = await done;
     assert.equal(code, 0);
     const out = stdout.text();
-    assert.match(out, /\[echo#1\] echo: hello world/);
+    // label-once 单会话:[echo#1] 头打一次,正文随后(不再每行带前缀)
+    assert.match(out, /\[echo#1\]/, "应出现 echo#1 标签头");
+    assert.match(out, /echo: hello world/, "假 CLI 回显正文应出现");
     assert.ok(!/\x1b\[/.test(out), "非 TTY stdout 必须零 ANSI 序列");
     assert.ok(out.includes("> "), "提示符保持 '> '");
   } finally {

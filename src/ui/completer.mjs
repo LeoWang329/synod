@@ -1,6 +1,6 @@
 // synod/src/ui/completer.mjs — readline tab 补全(§3.1)。纯函数 → 可单测。
 const COMMANDS = [
-  "/open", "/use", "/close", "/sessions", "/relay", "/unrelay", "/relays",
+  "/open", "/use", "/close", "/sessions", "/relay", "/unrelay", "/relays", "/forward",
   "/flow", "/status", "/help", "/exit", "/quit",
 ];
 const OPEN_OPTS = ["--agent", "--model", "--effort", "--write", "--mesh", "--no-mesh"];
@@ -39,7 +39,7 @@ export function makeCompleter({ sm, config = { agents: {} }, flows = [], backend
       return [cands.filter((c) => c.startsWith(word)), word];
     }
 
-    if (cmd === "/relay" || cmd === "/unrelay") {
+    if (cmd === "/relay" || cmd === "/unrelay" || cmd === "/forward") {
       const arrow = word.indexOf("->");
       if (arrow === -1) {
         return [labels().filter((l) => l.startsWith(word)).map((l) => l + "->"), word];

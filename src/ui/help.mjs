@@ -8,6 +8,7 @@ export const HELP_TEXT = [
   "  <text> → 当前会话      @<label> <text> → 定向      @all <text> → 广播",
   "转发",
   "  /relay a->b      /unrelay a->b      /relays",
+  "  /forward a->b [备注]   把 a 的上一轮输出(可带备注)发给 b,只发一次",
   "工作流",
   "  /flow             列出可用 flow",
   "  /flow <name> [input]",
@@ -28,6 +29,11 @@ const DETAILS = {
   sessions: "/sessions\n  表格列出全部会话(当前以 * 标注;RELAY 列示出/入边)。\n",
   relay: "/relay <from>-><to>\n  把 from 每个 turn 的完整输出转发给 to。\n",
   unrelay: "/unrelay <from>-><to>\n  移除一条转发规则。\n",
+  forward:
+    "/forward <from>-><to> [备注]\n" +
+    "  人工一次性转发:把 from 的上一轮输出发给 to,可带一段备注/指令。\n" +
+    "  与 /relay 的区别:不是常驻规则、不自动触发、人驱动每一跳(故无环问题)。\n" +
+    "  例:/forward omp#1->codex#1 只审查安全问题,别管风格\n",
   flow: "/flow [<name> [input]]\n  省略 name 列出可用 flow;带 name 运行(进度视图 + 头尾横幅)。\n",
   status: "/status\n  一行总览:会话数 / 在跑数 / 活跃 relay 数 / 当前会话 / flow。\n",
 };

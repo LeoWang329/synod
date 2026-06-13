@@ -58,7 +58,9 @@ test("REPL:--agent echo 默认会话,消息经假 CLI 回显", async () => {
   stdin.write("/exit\n");
   const code = await done;
   assert.equal(code, 0, stderr.text());
-  assert.match(stdout.text(), /\[echo#1\] echo: hello world/);
+  // label-once 单会话:[echo#1] 头打一次 + 正文随后(不再每行带前缀)
+  assert.match(stdout.text(), /\[echo#1\]/, "应出现 echo#1 标签头");
+  assert.match(stdout.text(), /echo: hello world/, "假 CLI 回显正文应出现");
   _unregisterForTests("echo");                          // 收尾
 });
 

@@ -174,9 +174,10 @@ function printHelp(stdout = process.stdout) {
       "  /sessions             List all sessions",
       "  @<label> <msg>        Send to a session",
       "  @all <msg>            Broadcast to all sessions",
-      "  /relay <from>-><to>   Forward source turn text to target",
+      "  /relay <from>-><to>   Auto-forward source turn text to target (standing rule)",
       "  /unrelay <from>-><to> Remove a relay rule",
       "  /relays               List active relay rules",
+      "  /forward <from>-><to> [note]  One-shot manual forward of source's last turn (with note)",
       "  /flow [<name> [input]] Run a workflow (omit name to list available)",
       "  /resume <runId>       Resume a previously failed/interrupted flow run",
       "  /exit, /quit          Close all sessions and quit",
@@ -529,7 +530,7 @@ async function main({
     flowStatus: () => (_pendingFlows.size > 0 ? `${_pendingFlows.size} running` : "none"),
   });
 
-  const { onTurnComplete: composedOnTurnComplete, drainControl, dropLabel } = wireControl({
+  const { onTurnComplete: composedOnTurnComplete, drainControl, dropLabel, controlActivity } = wireControl({
     sm, registry, stderr, dispatch,
   });
   _dropDepth = dropLabel;
@@ -556,15 +557,21 @@ async function main({
       }
       // P1-11 + B4: 等在飞 fence dispatch 落地(其 /open 的新会话因此进入 _sessions),
       // 再排一轮队尾——之后 closeAll 才能把它们一并关掉,不留窗口外的新会话。
-      // 有界不动点:被排空的 turn 可能再吐 control fence /open 出新会话,新会话首个
-      // turn 又可能吐 fence——故循环 drainAll/drainControl 直到一轮内 sessionLoad 不再
-      // 增长(drainControl 现已内部排到 _inflight 真正静默)。最多 5 轮,防失控。
+      // 有界不动点:被排空的 turn 可能再吐 control fence——/open 出新会话,或仅
+      // `@目标` / 回喂 turn(`[synod fence result]`)再触发下一轮 fence。后者**不增
+      // 会话数**,故仅看 sessionLoad 会在仍有控制活动时提前 break,把第二次 drainAll
+      // 期间冒出的 fence dispatch 漏在飞、被 closeAll 抢跑(codex MAJOR)。
+      // 修复:① 第二次 drainAll 后再 drainControl 一次,收掉它新催生的 dispatch;
+      //      ② break 条件兼看 sessionLoad 与 controlActivity()——两者一轮内都不变才算
+      //         真静默。最多 5 轮防失控(非终止 agent 由此兜底)。
       for (let round = 0; round < 5; round += 1) {
-        const before = sm.sessionLoad;
+        const beforeLoad = sm.sessionLoad;
+        const beforeActivity = controlActivity();
         await sm.drainAll();
         await drainControl();
         await sm.drainAll();
-        if (sm.sessionLoad === before) break;
+        await drainControl();   // 收第二次 drainAll 里(回喂/级联 turn)新冒出的 fence
+        if (sm.sessionLoad === beforeLoad && controlActivity() === beforeActivity) break;
       }
     } catch (err) {
       exitCode = 1;

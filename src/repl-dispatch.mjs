@@ -29,7 +29,7 @@
 // @all is explicitly disallowed (R4) — agent-fence messages must target
 // a specific session label.
 
-import { parseRelay } from "./relay.mjs";
+import { parseRelay, parseForward } from "./relay.mjs";
 import { HELP_TEXT, helpForCommand } from "./ui/help.mjs";
 import { NO_SESSION_HINT } from "./session-manager.mjs";
 
@@ -276,6 +276,40 @@ export function createReplDispatch({ sm, registry, stdout, stderr, defaultAgent,
       } else {
         registry.remove(parsed.from, parsed.to);
         stdout.write(`Relay removed: ${parsed.from} -> ${parsed.to}\n`);
+      }
+      return { redraw: true };
+    }
+
+    if (cmd === "/forward") {
+      // One-shot, human-driven forward of `from`'s last turn to `to`, with an
+      // optional note.  Unlike /relay this is not a standing rule and does not
+      // auto-fire — so there is no cycle to detect (the human paces each hop).
+      const parsed = parseForward(line);
+      if (parsed.error) {
+        stderr.write(`${parsed.error}\n`);
+        return { redraw: true };
+      }
+      if (!sm._sessions.has(parsed.from)) {
+        stderr.write(`No session "${parsed.from}"\n${NO_SESSION_HINT}`);
+        return { redraw: true };
+      }
+      if (!sm._sessions.has(parsed.to)) {
+        stderr.write(`No session "${parsed.to}"\n${NO_SESSION_HINT}`);
+        return { redraw: true };
+      }
+      const text = sm.lastTurnText ? sm.lastTurnText(parsed.from) : "";
+      if (!text) {
+        stderr.write(`Session "${parsed.from}" has no completed turn to forward yet\n`);
+        return { redraw: true };
+      }
+      const header = parsed.note
+        ? `[forward from ${parsed.from}] ${parsed.note}`
+        : `[forward from ${parsed.from}]`;
+      const ok = sm.enqueue({ target: parsed.to, msg: `${header}\n\n${text}` });
+      if (ok !== false) {
+        stdout.write(
+          `Forwarded ${parsed.from} -> ${parsed.to} (${text.length} chars)${parsed.note ? " with note" : ""}\n`,
+        );
       }
       return { redraw: true };
     }

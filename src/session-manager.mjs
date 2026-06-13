@@ -30,6 +30,88 @@ function createLineBuffer(label, stdout = process.stdout, { colorize } = {}) {
   };
 }
 
+// ── Output multiplexer (label-once ↔ per-line prefix) ─────────────────
+//
+// createLineBuffer above prefixes EVERY line with `[label]` — including blank
+// lines.  In a multi-agent context that is essential: it both attributes each
+// line to its session AND, by emitting whole `[label] ...\n` units atomically,
+// keeps two sessions' content from interleaving on one physical line (the
+// "no cross-talk" invariant A2/A6 acceptance assert).  But in the common
+// single-agent REPL it is pure noise — the label has nothing to disambiguate
+// and repeats on every line.
+//
+// The mux picks the rendering by how many sessions are OPEN (not by streaming
+// timing — that keeps the mode stable across a turn and immune to whether two
+// agents happen to stream at the same instant):
+//   - 1 open session  → SOLO: print `[label]` once at the turn's start, then
+//     stream the body verbatim (the model's own newlines preserved), no
+//     per-line prefix.  Deltas are written the instant they arrive, so sub-line
+//     fragments still accumulate live on one physical line.
+//   - ≥2 open sessions → SHARED: identical to createLineBuffer — every line
+//     prefixed, whole-line-atomic, so concurrent sessions stay attributable
+//     and never interleave mid-line.
+//
+// Opening a 2nd session switches everyone to SHARED; we close any dangling solo
+// line first so the next prefixed line starts clean.
+function createOutputMux(stdout) {
+  const channels = new Set();
+  const isSolo = () => channels.size <= 1;
+
+  function closeOpenLine(ch) {
+    if (ch.lineOpen) { stdout.write("\n"); ch.lineOpen = false; }
+  }
+
+  // SOLO: header once per turn, then body verbatim.  Leading newlines of the
+  // very first content are trimmed so there is no blank gap under the header.
+  function writeSolo(ch, chunk) {
+    let s = chunk;
+    if (ch.trimLeading) {
+      s = s.replace(/^\n+/, "");
+      if (s !== "") ch.trimLeading = false;
+    }
+    if (s === "") return;
+    if (!ch.headerWritten) { stdout.write(`${ch.prefix}\n`); ch.headerWritten = true; }
+    stdout.write(s);
+    ch.lineOpen = !s.endsWith("\n");
+  }
+
+  // SHARED: buffer to "\n", emit whole prefixed lines (no interleave).
+  function writeShared(ch, chunk) {
+    closeOpenLine(ch);                       // close a stray solo line first
+    ch.pending += chunk;
+    const lines = ch.pending.split("\n");
+    ch.pending = lines.pop();
+    for (const line of lines) stdout.write(`${ch.prefix} ${line}\n`);
+  }
+
+  function flushChannel(ch) {
+    closeOpenLine(ch);
+    if (ch.pending.length > 0) { stdout.write(`${ch.prefix} ${ch.pending}\n`); ch.pending = ""; }
+  }
+
+  return {
+    register(label, { colorize } = {}) {
+      const prefix = colorize ? colorize(`[${label}]`) : `[${label}]`;
+      const ch = { prefix, pending: "", lineOpen: false, headerWritten: false, trimLeading: true };
+      channels.add(ch);
+      // 1→2 sessions: switch to SHARED; close any dangling solo line so the
+      // first prefixed line of the new regime starts clean.
+      if (channels.size >= 2) for (const c of channels) closeOpenLine(c);
+      return {
+        feed(chunk) { (isSolo() ? writeSolo : writeShared)(ch, chunk); },
+        flush() { flushChannel(ch); },
+        /** Turn start: reset per-turn SOLO state (fresh header + leading trim). */
+        startTurn() { ch.headerWritten = false; ch.trimLeading = true; },
+        /** Turn end: flush trailing content / close the open body line. */
+        endTurn() { flushChannel(ch); },
+        /** Permanent removal (session closed). */
+        dispose() { flushChannel(ch); channels.delete(ch); },
+      };
+    },
+    get _sessionCount() { return channels.size; },
+  };
+}
+
 // ── Send queue ────────────────────────────────────────────────────────
 function createSendQueue(session, label, onTurnComplete) {
   let chain = Promise.resolve();
@@ -111,6 +193,10 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
   const _onTurnComplete = onTurnComplete || null;
   const _nl = errorLeadingNewline ? "\n" : "";
   const _relays = relays || (() => []);
+  // Shared output mux: per-session channels coordinate typewriter vs
+  // line-atomic so single-session streaming is live, multi-session stays
+  // cross-talk-free (see createOutputMux).
+  const _mux = createOutputMux(stdout);
 
   // ── Label allocation (per-instance counters) ────────────────────────
   const agentCounters = { omp: 0, codex: 0 };
@@ -161,7 +247,7 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
 
       const useColor = enabled(stdout, env);
       const colorize = useColor ? (s) => color(labelColor(label), s) : null;
-      const lineBuf = createLineBuffer(label, stdout, { colorize });
+      const lineBuf = _mux.register(label, { colorize });
       session.on("delta", (chunk) => lineBuf.feed(chunk));
       session.on("error", (err) => {
         stderr.write(`${_nl}[${label} error] ${err.message}\n`);
@@ -170,8 +256,9 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
       session.on("status", ({ status }) => {
         if (status === "running") {
           _turnStartAt = Date.now();
+          lineBuf.startTurn();
         } else if (status === "idle") {
-          lineBuf.flush();
+          lineBuf.endTurn();
           if (useColor && _turnStartAt != null) {
             const secs = ((Date.now() - _turnStartAt) / 1000).toFixed(1);
             stdout.write(turnBoundary(label, secs));
@@ -181,9 +268,17 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
         }
       });
 
+      // Capture each completed turn's text so /forward can replay it on
+      // demand, then delegate to the real onTurnComplete (relay + control).
+      const captureAndForward = (lbl, result) => {
+        const inf = _sessions.get(lbl);
+        if (inf) inf.lastTurnText = result?.text ?? "";
+        if (_onTurnComplete) _onTurnComplete(lbl, result);
+      };
+
       _sessions.set(label, {
-        session, agent, model: m, effort: e, lineBuf,
-        sendQueue: createSendQueue(session, label, _onTurnComplete),
+        session, agent, model: m, effort: e, lineBuf, lastTurnText: "",
+        sendQueue: createSendQueue(session, label, captureAndForward),
       });
       if (setCurrent) _currentLabel = label;
 
@@ -301,7 +396,7 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
       stderr.write(`No session "${label}"\n${NO_SESSION_HINT}`);
       return false;
     }
-    info.lineBuf.flush();
+    info.lineBuf.dispose();
     try { info.session.close(); } catch {}
     _sessions.delete(label);
     if (_currentLabel === label) {
@@ -323,6 +418,13 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
     return _sessions.entries();
   }
 
+  /** The given session's last completed turn text (for /forward).
+   *  Returns null if no such session, "" if it has not completed a turn. */
+  function lastTurnText(label) {
+    const info = _sessions.get(label);
+    return info ? (info.lastTurnText ?? "") : null;
+  }
+
   return {
     open,
     enqueue,
@@ -333,10 +435,11 @@ function createSessionManager({ openBackend, stdout, stderr, report, cwd, defaul
     flushAll,
     closeAll,
     entries,
+    lastTurnText,
     get currentLabel() { return _currentLabel; },
     get _sessions() { return _sessions; },
     get sessionLoad() { return _sessions.size + _pendingOpens; },
   };
 }
 
-export { createSessionManager, createLineBuffer, checkAgentAvailable };
+export { createSessionManager, createLineBuffer, createOutputMux, checkAgentAvailable };

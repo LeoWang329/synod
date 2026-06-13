@@ -79,23 +79,38 @@ describe("createSessionManager", () => {
 
   // ── Event wiring: delta → lineBuf output ──────────────────────────
 
-  it("delta events feed lineBuffer and flush to stdout on idle", async () => {
+  it("single session: label printed once, body streamed verbatim (label-once)", async () => {
     const { sm, stdout } = setup({ sessionOpts: { deltas: ["Hello", " world"] } });
     await sm.open({ agent: "omp" });
-    // enqueue triggers send, which emits deltas; idle triggers flush
+    // enqueue triggers send, which emits deltas; idle closes the body line
     await sm.enqueue({ msg: "hello" });
-    assert.ok(stdout.buf.includes("[omp#1] Hello world\n"),
-      `expected "[omp#1] Hello world\\n" in stdout, got: ${JSON.stringify(stdout.buf)}`);
+    assert.ok(stdout.buf.includes("[omp#1]\nHello world\n"),
+      `expected "[omp#1]\\nHello world\\n" in stdout, got: ${JSON.stringify(stdout.buf)}`);
   });
 
-  it("delta with newlines writes line-buffered output before idle", async () => {
+  it("single session: model's own newlines flow under one label header", async () => {
     const { sm, stdout } = setup({ sessionOpts: { deltas: ["line1\n", "line2"] } });
     await sm.open({ agent: "omp" });
     await sm.enqueue({ msg: "hello" });
-    // line1\n → emitted immediately as [omp#1] line1\n
-    // line2 → buffered, flushed on idle
-    assert.ok(stdout.buf.includes("[omp#1] line1\n"), "newline-terminated delta should emit immediately");
-    assert.ok(stdout.buf.includes("[omp#1] line2\n"), "trailing delta should flush on idle");
+    // one [omp#1] header, then body verbatim — NOT a prefix per line
+    assert.ok(stdout.buf.includes("[omp#1]\nline1\nline2\n"),
+      `expected single-label body, got: ${JSON.stringify(stdout.buf)}`);
+  });
+
+  // ── lastTurnText capture (for /forward) ──────────────────────────
+
+  it("captures lastTurnText after a completed turn", async () => {
+    const { sm } = setup({ sessionOpts: { deltas: ["Hello", " world"] } });
+    await sm.open({ agent: "omp" });
+    await sm.enqueue({ msg: "hi" });
+    assert.strictEqual(sm.lastTurnText("omp#1"), "Hello world");
+  });
+
+  it("lastTurnText is null for unknown session and '' before any turn", async () => {
+    const { sm } = setup();
+    assert.strictEqual(sm.lastTurnText("ghost"), null);
+    await sm.open({ agent: "omp" });
+    assert.strictEqual(sm.lastTurnText("omp#1"), "");
   });
 
   // ── Event wiring: status idle → flush + onIdle ────────────────────

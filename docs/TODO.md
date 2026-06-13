@@ -65,12 +65,28 @@
 
 > mesh 编排根治 + 注入(item 4/5)+ Phase E 已完成合入 main(`1155d21`);**per-session mesh 粒度已于 2026-06-10 完成**(见上节)。本期其余**主动留门**、下次可选。
 > **2026-06-10 评审**:deepseek-v4-pro + mimo-v2.5-pro 交叉评审本节(MiniMax-M3 因本机 `MINIMAX_API_KEY` 未配置 401 缺席)。原一致优先级 per-session mesh > E6 > 持久化,**per-session mesh 已落地**,剩余优先级 **🔴 fence 结果回喂 > E6 > 持久化**,另揪出 🔴(已核代码确认)。E6 评审建议**改姿势**:别等 agent 自发吐 fence(不可靠),改用**注入已知 fence** 测 relay+fence 管线。持久化评审强调**根本限制**:后端 agent 会话是持有 fd 的活进程、不可序列化,恢复只能"重 spawn + 重放",现实只能做 flow 级 checkpoint。
+> **2026-06-12 更新**:🔴 **fence 结果回喂已落地 + codex 评审整改完成**(deepseek 欠费缺席,见下条 ✅)。**剩余优先级:E6 > 持久化**(均为主动留门)。
 
-- **🔴 fence 执行结果回喂发起 agent(评审新增,2026-06-10;非"可选"——卡自主编排)** —— 现状:agent 在围栏里 `/open` 出一个会话后**拿不到新会话的 label**。`control-wire.mjs:68-72` 把 label 只写进内部 `_depthMap`、拒绝原因只打 stderr,**无任何路径把结果回注 agent 下一轮**。后果:agent 能建会话但不知 label → 无法 `@它` 发消息,自主编排瞎操作。**已核代码确认(deepseek 提出)。** 方案:把每条 fence 命令的执行结果(成功 label / 失败 reason)在本 turn 完成点回注发起会话的下一轮上下文(类比 relay 的 `[…]` 注入)。建议**优先于下面三条**——这是 mesh 自主编排的核心价值所在。
+- ✅ **fence 执行结果回喂发起 agent(2026-06-12 落地)** —— 原缺口:agent 在围栏里 `/open` 出会话后**拿不到新会话 label**(结果只进 `_depthMap`/stderr,无路径回注),自主编排瞎操作。**落地**:`control-wire.mjs` 的 fence dispatch 循环收集每条命令结果,turn 末把**一条合并消息** `[synod fence result]\n<逐条结果>` 经 `sm.enqueue` 回注**发起会话**下一轮(类比 relay 的 `[…]` 注入,走同一通道);成功 `/open` 带回 `→ ok · session <label>`,失败带 `→ error: <reason>`。`mesh-instructions.mjs` 加「### Command results」段告知 agent 会收到回喂、用返回 label 去 `@它`。
+  - **codex 双轮审查整改(deepseek 欠费缺席,本轮单评审)**:
+    - **🔴→已修 关停排水提前 break(codex MAJOR)**:`cli.mjs` onClose 排水循环原只看 `sessionLoad` 判静默,但回喂 turn / `@目标` / 被拒 `/open` **不增会话数**却仍产生控制活动——回喂触发的下一轮 fence dispatch 会被漏在飞、被 `closeAll` 抢跑。**根因**:`sessionLoad` 是「还有活吗」的不完整代理。**修复**:`wireControl` 暴露 `controlActivity()`(单调计数,每个带 fence 的 turn +1);循环①第二次 `drainAll` 后再 `drainControl()` 收掉级联/回喂 turn 新催生的 dispatch,②break 兼看 `sessionLoad` 与 `controlActivity()` 一轮内都不变才算真静默(5 轮上限兜底非终止 agent)。
+    - **MINOR**:协议文档「first message of your next turn」过满 → 改「on a following turn,其它已排队消息可能在前」;`control-wire.mjs` 「no-ops if session is gone」注释不准 → 改为「enqueue 返回 false + 写 No session 诊断,安全丢弃」。
+    - codex R2 逐句走查确认窗口闭合、终止性仍有界、关停丢弃可接受,**verdict: safe to commit**。
+  - **TDD 测试**:`control-wire.test.mjs` +6(回喂:成功带 label / 失败带 reason / 多命令单条合并 / 无 fence 不回喂 / dispatch throw 仍回报)+2(`controlActivity` 计数:无 fence 不增、每带 fence turn +1);`mesh-instructions.test.mjs` +1(回喂契约指纹)。**受影响集 90/90 全绿**(control-wire 25 / mesh-instructions 20 / backend.contract / backend.systemprompt / cli.integration)。
 
 - **E6 围栏 + relay 协同 e2e** —— 验证 agent 在 ` ```synod ``` ` 围栏里吐 `/relay a->b`,在本 turn 完成点建链、下一 turn 起生效(沿用现有 relay 时序)。本期 Phase E 标 deferred(真 agent 下可靠构造较难);接线逻辑已由 Tier1 [`control-wire.test.mjs`](../test/control-wire.test.mjs) 覆盖。
 - **持久化 / 恢复** —— flow 引擎的 `ctx` 已设计为纯数据可序列化(留门);整套会话 / flow 的持久化与崩溃恢复尚未做。
 
+## 转发 / 编排(2026-06-12 用户试用反馈)
+
+- ✅ **转发时可带备注/描述(`/forward`)**(2026-06-12 落地)—— 新增人工一次性转发原语 `/forward <from>-><to> [备注]`:抓 `from` 上一轮输出 + 当场备注发给 `to`,只发一次。人驱动每一跳,故无常驻规则、不自动触发,**天然绕开 relay 的环问题**(环检测对它不适用);同时满足"带备注"与"主持人模式来回转"两诉求。`/relay` 自动转发 + 环检测维持不动。
+  - **落地**:`parseForward`(`src/relay.mjs`)解析 `from->to` + 保留内部空格的 note;`/forward` 分发(`src/repl-dispatch.mjs`,human-only);session-manager 缓存每会话 `lastTurnText` + 暴露 `lastTurnText(label)` 取数;消息体 `[forward from <from>] <备注>\n\n<上一轮输出>`。help 文案补 `/forward`(`src/ui/help.mjs` + `src/cli.mjs`)。
+  - **测试**:`parseForward` 解析(`test/relay-parse.test.mjs`)+ `/forward` 分发各路径(带/不带备注、缺源/缺目标会话、源无完成轮、解析错;`test/repl-dispatch.test.mjs`)+ `lastTurnText` 缓存(`test/session-manager.test.mjs`)。
+  - **未采纳**:"去掉 relay 环检测"——auto-relay 的环=无终止条件的机器对喷死循环,环检测是必要护栏;双向迭代该用 `/forward`(人驱动)或 flow 的 `backtrack`(有 PASS 判定)。**静态注解模板**(给常驻 `/relay` 规则套壳)留作可选,本次未做。
+
 ## UI / 渲染(2026-06-12 用户试用反馈)
 
-- **行内实时流式(typewriter)** —— 现状:流式输出按**整行**出现(`createLineBuffer` `src/session-manager.mjs:12-31` 把 delta 攒到 `\n` 才带 `[label]` 前缀整行 `stdout.write`),同一行内看不到逐字增长,长行要到换行 / turn 末 `flush()` 才整段冒出来。**根因是有意设计**:行原子输出保证 `@all` 多会话时 `[omp#1]`/`[codex#1]` 不在行内交错串台(`scripts/acceptance.mjs` A2/A6 "no cross-talk" 断言依赖它)。**修复方向**:单会话(或当前只有一个会话在流式)走"label 打一次 + delta 续到同一行 + turn 末换行"的打字机模式,多会话并发回退到现行行原子模式——**别无脑删 line-buffer**,否则破坏多会话不串台这个核心卖点。渲染接线入口 `src/session-manager.mjs:164-165`(`session.on("delta", c => lineBuf.feed(c))`)。
+- ✅ **流式"分块/每行带前缀"噪声 → label-once**(2026-06-12 落地)—— **真因(实测纠正):**不是 `createLineBuffer`,是 omp **delta 粒度本来就粗**(77 字回答只吐 4 个 delta、单个 delta 内就跨多行;`omp --help` 无粒度 flag,`backend.mjs:675` 收到即 emit 不攒)。渲染层变不出后端没给的平滑;能改善的是**别每行都打 `[omp#1]`**(连空行都带,纯噪声)。
+  - **落地**:新增 `createOutputMux`(`src/session-manager.mjs`),按**打开会话数**选模式(非流式时序,稳定):**1 个会话 → SOLO**(turn 开始打一次 `[label]` 头,正文按模型自己的换行原样流、不再逐行加前缀;首个内容的前导换行裁掉、避免头下空行;sub-line delta 仍即到即贴、行内实时累加);**≥2 个会话 → SHARED**(回退每行带前缀、整行原子,保多会话可归属 + 不串台 A2/A6)。开第 2 个会话时先 `\n` 收掉半行再切 SHARED。着色落在 `[label]` 头一次,正文不染。
+  - **测试**:`test/output-mux.test.mjs`(SOLO 头一次+正文原样/保留模型换行/裁前导换行/每轮新头;SHARED 每行前缀不串台;1→2 收行;2→1 复活;着色)+ `session-manager`/`ui.line-color`/两个 cli 集成用例更新到 label-once。多会话并发真 agent 不串台仍由 acceptance A2/A6 守(本机无网络未跑)。`createLineBuffer` 保留未动(SHARED 的等价实现 + 其单测直接测它)。
+  - **未做(留门)**:真·逐字打字机(不受后端粒度影响)需**显示层人工节拍器**(缓冲+按 ms 逐字吐,带追赶);评估为 cosmetic + 加延迟,本次未做。

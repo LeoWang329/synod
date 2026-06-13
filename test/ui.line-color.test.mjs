@@ -25,7 +25,8 @@ test("createLineBuffer:无 colorize → 纯文本(非 TTY 零 ANSI,现状不变)
   assert.deepEqual(lines, ["[omp#1] hi\n"]);
 });
 
-test("createSessionManager:stdout.isTTY → delta 行着色;非 TTY → 零 ANSI", async () => {
+test("createSessionManager:stdout.isTTY → label 头着色;非 TTY → 零 ANSI", async () => {
+  // label-once 模式:单会话下 [omp#1] 头打一次并着色,正文原样(不染模型内容)。
   async function run(isTTY) {
     const lines = [];
     const stdout = { isTTY, write: (s) => lines.push(s) };
@@ -37,11 +38,14 @@ test("createSessionManager:stdout.isTTY → delta 行着色;非 TTY → 零 ANSI
     const label = await sm.open({ agent: "omp" });
     await sm.enqueue({ target: label, msg: "go" });
     await sm.drainAll(); sm.flushAll(); sm.closeAll();
-    return lines.join("").split("\n").find((l) => l.includes("yo")) ?? "";
+    // Drop the turn-boundary decoration line (TTY-only, carries a non-deterministic
+    // duration) — compare only the streamed header + body.
+    return lines.join("").split("\n").filter((l) => l && !/──|done ·/.test(l)).join("\n");
   }
   const tty = await run(true);
   const plain = await run(false);
-  assert.ok(/\x1b\[/.test(tty), "TTY 的 delta 行含 ANSI");
-  assert.ok(!/\x1b\[/.test(plain), "非 TTY 的 delta 行零 ANSI");
-  assert.equal(stripAnsi(tty), plain, "strip(TTY delta 行)=非 TTY delta 行");
+  assert.ok(/\x1b\[/.test(tty), "TTY 输出含 ANSI(着色的 label 头)");
+  assert.ok(!/\x1b\[/.test(plain), "非 TTY 输出零 ANSI");
+  assert.ok(/yo/.test(plain), "正文 yo 应在输出中");
+  assert.equal(stripAnsi(tty), plain, "strip(TTY)=非 TTY");
 });
