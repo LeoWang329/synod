@@ -38,6 +38,7 @@ function parseArgs(argv) {
     effort: undefined,
     write: false,
     mesh: undefined, // tri-state: undefined → fall back to SYNOD_MESH env (see main())
+    noTui: false,
     tasks: [],
     reap: false,
     runs: false,
@@ -97,6 +98,9 @@ function parseArgs(argv) {
         }
         out.mesh = false;
         break;
+      case "--no-tui":
+        out.noTui = true;
+        break;
       case "--task": {
         const v = argv[++i];
         if (!v || v.startsWith("--")) {
@@ -147,6 +151,16 @@ export function meshFromEnv(env) {
   return v === "1" || v === "true";
 }
 
+// 是否进入全屏 TUI:stdin 与 stdout 都须是 TTY(管道喂入/输出重定向都退回行 REPL);
+// 非 --task、未 --no-tui、无 SYNOD_NO_TUI。
+export function shouldUseTui(stdin, stdout, args, env) {
+  if (!stdin || !stdin.isTTY || !stdout || !stdout.isTTY) return false;
+  if (args.tasks && args.tasks.length > 0) return false;
+  if (args.noTui) return false;
+  if (env && (env.SYNOD_NO_TUI === "1" || env.SYNOD_NO_TUI === "true")) return false;
+  return true;
+}
+
 function printHelp(stdout = process.stdout) {
   stdout.write(
     [
@@ -166,6 +180,7 @@ function printHelp(stdout = process.stdout) {
       "  --task <agent>:<msg>  Run task non-interactively (repeatable)",
       "  --mesh                Inject orchestration skill into spawned agents (default: off)",
       "  --no-mesh             Force mesh off, overriding the SYNOD_MESH env var",
+      "  --no-tui              Disable the full-screen TUI (use the line REPL)",
       "  -h, --help            Show this help",
       "",
       "REPL commands:",
@@ -271,6 +286,23 @@ async function runTasks(tasks, report, baseOpts, { openBackend, stdout = process
 
   } finally {
     sm.closeAll();
+  }
+}
+
+// 退出排水(line REPL 与 TUI 共用):有界不动点排空在飞 turn / control fence / relay 级联,
+// 再清 relay 规则、flush、closeAll。drainControl/活动计数由调用方传入。
+async function drainAndClose({ sm, registry, drainControl, controlActivity }) {
+  try {
+    for (let round = 0; round < 5; round += 1) {
+      const beforeLoad = sm.sessionLoad, beforeAct = controlActivity();
+      await sm.drainAll(); await drainControl();
+      await sm.drainAll(); await drainControl();
+      if (sm.sessionLoad === beforeLoad && controlActivity() === beforeAct) break;
+    }
+  } finally {
+    // 即使 drainAll 抛也务必清 relay、flush、关全部会话(对齐老 onClose 的 finally)。
+    for (const [label] of sm._sessions) registry.removeForLabel(label);
+    sm.flushAll(); sm.closeAll();
   }
 }
 
@@ -387,6 +419,77 @@ async function main({
   // ── Non-interactive ────────────────────────────────────────────────
   if (args.tasks.length > 0) {
     return runTasks(args.tasks, report, { model: args.model, effort: args.effort, write: args.write, mesh, cwd }, { openBackend, stdout, stderr });
+  }
+
+  // ── TUI 分支(stdin+stdout 皆 TTY 默认进;捕获流隔离全屏)────────────────────
+  if (shouldUseTui(stdin, stdout, args, env)) {
+    const flowsRootTui = workflowsRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "workflows");
+    const { startTui } = await import("./ui/tui/index.mjs");
+    const { createStore } = await import("./ui/tui/store.mjs");
+    const { makeCaptureStream } = await import("./ui/tui/capture.mjs");
+
+    const store = createStore();
+    const cap = makeCaptureStream((line) => store.pushSystem(line));
+
+    let smTui, composed;
+    const registry = createRelayRegistry((to, msg, meta) => {
+      if (meta) store.pushSystem(`[relay ${meta.from}→${to}] ${meta.chars} chars`);
+      smTui.enqueue({ target: to, msg });
+    });
+    smTui = createSessionManager({
+      openBackend, stdout: cap, stderr: cap, report, cwd,
+      defaults: { model: args.model, effort: args.effort, write: args.write, mesh },
+      onIdle: () => {}, renderOutput: false,
+      onSessionOpen: (label, session) => {
+        const info = smTui._sessions.get(label);
+        store.attachSession(label, session, info.agent, { model: info.model, effort: info.effort });
+        store.setRelays(registry.list());
+      },
+      onTurnComplete: (label, result) => { if (composed) composed(label, result); store.setRelays(registry.list()); },
+      relays: () => registry.list(), env,
+    });
+    let _dropDepthTui = () => {};
+    const dispatchTui = createReplDispatch({
+      sm: smTui, registry, stdout: cap, stderr: cap, defaultAgent: args.agent,
+      guardrails: { maxSessions: 10, maxDepth: 3, allowWrite: false }, config, flowStatus: () => "none",
+      onCloseLabel: (label) => _dropDepthTui(label),
+    });
+    const wired = wireControl({ sm: smTui, registry, stderr: cap, dispatch: dispatchTui });
+    composed = wired.onTurnComplete;
+    _dropDepthTui = wired.dropLabel;
+    const drainControl = wired.drainControl, controlActivity = wired.controlActivity;
+
+    const syncFocus = () => { store.setFocus(smTui.currentLabel); for (const l of store.getState().order) if (!smTui._sessions.has(l)) store.dropSession(l); };
+    const onSelect = (label) => { if (smTui.use(label)) store.setFocus(label); };
+    const onCycle = () => { store.focusNext(); const f = store.getState().focusLabel; if (f) smTui.use(f); };
+    const dispatchWrapped = (line, opts) => { const r = dispatchTui(line, opts); Promise.resolve(r).finally?.(syncFocus); syncFocus(); return r; };
+
+    const flowList = await (async () => { try { return (await discoverFlows(flowsRootTui)).flows?.map((f) => f.name) ?? []; } catch { return []; } })();
+    const hintsCtx = {
+      labels: () => [...smTui._sessions.keys()], flows: flowList,
+      backends: () => backendNames(), profiles: () => Object.keys(config.agents ?? {}),
+    };
+
+    try { const n = residualWorktreeNotice(scanResidualWorktrees(cwd)); if (n) store.pushSystem(n.trim()); } catch {}
+
+    const defLabel = await smTui.open({ agent: args.agent, announce: false });
+    if (!defLabel) return 3;
+    store.setFocus(smTui.currentLabel);
+
+    let tui;
+    let _interruptCount = 0;
+    const onInterrupt = () => {
+      _interruptCount += 1;
+      if (_interruptCount >= 2) { closeAllLiveSessionsSync(); process.exit(1); return; }
+      for (const [, info] of smTui._sessions) {
+        try { Promise.resolve(info.session.abort?.()).catch(() => {}); } catch {}
+      }
+      try { tui.unmount(); } catch {}
+    };
+    tui = await startTui({ store, dispatch: dispatchWrapped, hintsCtx, mesh, onSelect, onCycle, onInterrupt, stdin, stdout });
+    await tui.waitUntilExit();
+    await drainAndClose({ sm: smTui, registry, drainControl, controlActivity });
+    return 0;
   }
 
   // ── Interactive mode ───────────────────────────────────────────────
@@ -555,35 +658,14 @@ async function main({
       if (_pendingFlows.size > 0) {
         await Promise.allSettled([..._pendingFlows]);
       }
-      // P1-11 + B4: 等在飞 fence dispatch 落地(其 /open 的新会话因此进入 _sessions),
-      // 再排一轮队尾——之后 closeAll 才能把它们一并关掉,不留窗口外的新会话。
-      // 有界不动点:被排空的 turn 可能再吐 control fence——/open 出新会话,或仅
-      // `@目标` / 回喂 turn(`[synod fence result]`)再触发下一轮 fence。后者**不增
-      // 会话数**,故仅看 sessionLoad 会在仍有控制活动时提前 break,把第二次 drainAll
-      // 期间冒出的 fence dispatch 漏在飞、被 closeAll 抢跑(codex MAJOR)。
-      // 修复:① 第二次 drainAll 后再 drainControl 一次,收掉它新催生的 dispatch;
-      //      ② break 条件兼看 sessionLoad 与 controlActivity()——两者一轮内都不变才算
-      //         真静默。最多 5 轮防失控(非终止 agent 由此兜底)。
-      for (let round = 0; round < 5; round += 1) {
-        const beforeLoad = sm.sessionLoad;
-        const beforeActivity = controlActivity();
-        await sm.drainAll();
-        await drainControl();
-        await sm.drainAll();
-        await drainControl();   // 收第二次 drainAll 里(回喂/级联 turn)新冒出的 fence
-        if (sm.sessionLoad === beforeLoad && controlActivity() === beforeActivity) break;
-      }
+      // P1-11 + B4: 有界不动点排空在飞 fence dispatch / 回喂级联,再清 relay、flush、
+      // closeAll(全部搬进共享的 drainAndClose,与 TUI 退出路径同源 — 语义不变:
+      // relay 清理 / flush / closeAll 仍在其 finally 里,故 drainAll 抛错也照常执行)。
+      await drainAndClose({ sm, registry, drainControl, controlActivity });
     } catch (err) {
       exitCode = 1;
       stderr.write(`synod: ${err.stack || err.message}\n`);
     } finally {
-      // Clean up relay rules for all sessions being closed
-      for (const [label] of sm._sessions) {
-        registry.removeForLabel(label);
-      }
-      // Flush any trailing buffered text
-      sm.flushAll();
-      sm.closeAll();
       resolveExit(exitCode);
     }
   }
