@@ -133,6 +133,23 @@ async function main() {
   const toolCard3 = store.getState().sessions["omp#1"].entries.find((e) => e.type === "tool");
   ok("Ctrl-E again collapses (store.expanded=false)", toolCard3 && toolCard3.expanded === false);
 
+  // 7) C 编排意图:appendFence → C 摘要 + 未读 hot;Ctrl-G 展开读明细 + 清 hot;Ctrl-T 展开 D。
+  store.appendFence("omp#1", { commands: [{ cmd: "/open --agent codex", result: "ok · session codex#1" }], feedbackSent: true });
+  await sleep(40);
+  ok("C 摘要显示命令数 + 未读(seen=false)", stdout.text().includes("1 cmds") && store.getState().fences["omp#1"].seen === false);
+
+  stdin.write("\x07");  // Ctrl-G 展开 C
+  await sleep(50);
+  ok("Ctrl-G 展开 C → 明细显示 cmd → result", stdout.text().includes("/open --agent codex"));
+  ok("Ctrl-G 标记 fence 已读(hot 清除)", store.getState().fences["omp#1"].seen === true);
+
+  const beforeCtrlT = stdout.text().length;
+  stdin.write("\x14");  // Ctrl-T 展开 D(本会话无 relay:验展开后渲染 D 明细 out:/in: 且不崩)
+  await sleep(40);
+  const afterCtrlT = stdout.text();
+  ok("Ctrl-T 展开 D → 新帧渲染 D 明细(out: —)且焦点仍在",
+    afterCtrlT.length > beforeCtrlT && afterCtrlT.includes("out: —") && afterCtrlT.includes("omp#1"));
+
   try { tui.teardown ? tui.teardown() : tui.unmount(); } catch {}
 
   const failed = checks.filter(([, c]) => !c);
