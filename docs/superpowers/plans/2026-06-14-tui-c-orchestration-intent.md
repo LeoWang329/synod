@@ -16,7 +16,7 @@
 |---|---|---|
 | `src/control-wire.mjs` | `wireControl` 加可选 `onFence`;`onTurnComplete` 构造结构化 `commands` + 真实 `feedbackSent`,fence task 末 emit | 改 |
 | `src/ui/tui/store.mjs` | `appendFence`(累积+trim+seen=false)+ `markFenceSeen`;`dropSession` 删 `fences[label]` | 改 |
-| `src/cli.mjs` | TUI 分支 `wireControl({…, onFence: (l,f)=>store.appendFence(l,f) })` | 改 |
+| `src/cli.mjs` | TUI 分支 `wireControl({…, onFence })`,gate「会话仍在」后 `store.appendFence` | 改 |
 | `src/ui/tui/app.mjs` | `expandC/expandD` state + Ctrl-G/Ctrl-T + 传 FocusPane + 展开 C 清 seen | 改 |
 | `scripts/smoke-tui.mjs` | 扩冒烟:appendFence→C 摘要/未读,Ctrl-G 展开读明细+清 hot,Ctrl-T 展开 D | 改 |
 | `test/control-wire.test.mjs` | onFence 被调 / commands shape / feedbackSent / 不传不炸 / 无 fence 不调 | 改 |
@@ -301,7 +301,7 @@ git commit -m "feat(tui): store appendFence/markFenceSeen + dropSession fence cl
 **Files:**
 - Modify: `src/cli.mjs`(TUI 分支 `wireControl` 调用,现 `src/cli.mjs:457`)
 
-> 说明:这是 TUI 分支闭包里的一行接线(与 P2 T6 的 pushUser 回显同类),无法独立单测(`main()` 整块需全栈);由 Task 5 真接线冒烟 + control-wire(T1)/store(T2)单测共同覆盖。codex 评审静态核对。
+> 说明:这是 TUI 分支闭包里的一行接线(与 P2 T6 的 pushUser 回显同类),无法独立单测(`main()` 整块需全栈)。覆盖:control-wire(T1)产出 + store(T2)消费各有单测,本接线(含 gate)由 codex 静态审保证;Task 5 的 UI 链路冒烟验下游渲染(不验本接线)。
 
 - [ ] **Step 1: 改 `src/cli.mjs:457`**
 
