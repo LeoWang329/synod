@@ -254,6 +254,39 @@ function compactValue(value, depth = 0) {
   return copy;
 }
 
+// P2 task1: un-truncated tool-event channel helpers.
+// Exported as named functions so unit tests can drive them without spawning processes.
+
+// OmpSession: emit tool_execution_start / tool_execution_end messages on the
+// "toolevent" channel of the given emitter, bypassing compactEvent truncation.
+// Returns true when the message was a tool event (so the caller can decide
+// whether additional work is needed); false otherwise.
+export function emitToolEventFromOmp(emitter, message) {
+  const t = message && message.type;
+  if (t === "tool_execution_start" || t === "tool_execution_end") {
+    emitter.emit("toolevent", message); // same reference — no copy, no truncation
+    return true;
+  }
+  return false;
+}
+
+// CodexSession: emit tool-typed items on the "toolevent" channel.
+// Only known tool item types are forwarded (allowlist) to avoid promoting
+// reasoning / todoList / agentMessage items to tool cards in the TUI.
+// The envelope { type:"tool.item", item } preserves the full item payload.
+const CODEX_TOOL_ITEM_TYPES = new Set([
+  "commandExecution",
+  "fileChange",
+  "mcpToolCall",
+  "patchApply",
+  "webSearch",
+]);
+export function emitToolEventFromCodexItem(emitter, item) {
+  if (!item || !CODEX_TOOL_ITEM_TYPES.has(item.type)) return false;
+  emitter.emit("toolevent", { type: "tool.item", item });
+  return true;
+}
+
 // 0.5.1:311
 function extractVisibleTextDelta(event) {
   if (!event || typeof event !== "object") return "";
@@ -649,6 +682,7 @@ class OmpSession extends EventEmitter {
     }
 
     this.#applyEvent(message);
+    emitToolEventFromOmp(this, message); // P2: tool events → toolevent (untruncated); event channel unchanged
     this.#emit(compactEvent(message));
   }
 
@@ -1247,6 +1281,7 @@ class CodexSession extends EventEmitter {
           return;
         }
         const item = params.item || {};
+        emitToolEventFromCodexItem(this, item); // P2: full tool item → toolevent; stripped #emit below unchanged
         if (
           item.type === "agentMessage" &&
           typeof item.text === "string" &&
