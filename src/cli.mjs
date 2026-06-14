@@ -454,7 +454,13 @@ async function main({
       guardrails: { maxSessions: 10, maxDepth: 3, allowWrite: false }, config, flowStatus: () => "none",
       onCloseLabel: (label) => _dropDepthTui(label),
     });
-    const wired = wireControl({ sm: smTui, registry, stderr: cap, dispatch: dispatchTui });
+    const wired = wireControl({
+      sm: smTui, registry, stderr: cap, dispatch: dispatchTui,
+      // C:编排意图喂进 store。gate「会话仍在」——fence task 是 fire-and-forget,可能在
+      // originator 已被 dropSession 之后才回调;不 gate 会 late-append 重建一个 orphan
+      // fences[label](该会话已不在 sessions/order,FocusPane 永不渲染、也永不再清)。
+      onFence: (label, fence) => { if (store.getState().sessions[label]) store.appendFence(label, fence); },
+    });
     composed = wired.onTurnComplete;
     _dropDepthTui = wired.dropLabel;
     const drainControl = wired.drainControl, controlActivity = wired.controlActivity;
