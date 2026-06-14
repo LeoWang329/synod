@@ -3,6 +3,7 @@
 import { getEventAdapter } from "./events.mjs";
 const MAX_SYSTEM = 100;
 const MAX_ENTRIES = 300;   // 时间线条目上限,防内存无界
+const MAX_FENCE_CMDS = 200;   // C 编排意图累积命令上限,防无界
 
 export function createStore() {
   const state = {
@@ -94,8 +95,22 @@ export function createStore() {
     pushSystem(line) { state.system.push(line); trimSystem(); notify(); },
     setRelays(list) { state.relays = list; notify(); },
     setFence(label, data) { state.fences[label] = data; notify(); },
+    appendFence(label, fence) {
+      const f = state.fences[label] || { commands: [], feedbackSent: false, seen: true };
+      f.commands = f.commands.concat(fence.commands || []);
+      while (f.commands.length > MAX_FENCE_CMDS) f.commands.shift();
+      f.feedbackSent = Boolean(fence.feedbackSent);
+      f.seen = false;   // 新编排到达 → 触发 hot
+      state.fences[label] = f;
+      notify();
+    },
+    markFenceSeen(label) {
+      const f = state.fences[label];
+      if (f) { f.seen = true; notify(); }
+    },
     dropSession(label) {
       delete state.sessions[label];
+      delete state.fences[label];
       state.order = state.order.filter((l) => l !== label);
       if (state.focusLabel === label) state.focusLabel = state.order[state.order.length - 1] ?? null;
       notify();
