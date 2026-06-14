@@ -27,6 +27,11 @@ export async function startTui({ store, dispatch, hintsCtx, mesh, onSelect, onCy
   const React = (await import("react")).default;
   const { render } = await import("ink");
   const { App } = await import("./app.mjs");
+  const { registerEventAdapter } = await import("./events.mjs");
+  const { ompAdapter } = await import("./adapters.omp.mjs");
+  const { codexAdapter } = await import("./adapters.codex.mjs");
+  registerEventAdapter("omp", ompAdapter);
+  registerEventAdapter("codex", codexAdapter);
 
   stdout.write(ENTER_ALT + HIDE_CURSOR + MOUSE_ON);
   const teardown = buildTeardown(stdout);

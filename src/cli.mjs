@@ -462,7 +462,15 @@ async function main({
     const syncFocus = () => { store.setFocus(smTui.currentLabel); for (const l of store.getState().order) if (!smTui._sessions.has(l)) store.dropSession(l); };
     const onSelect = (label) => { if (smTui.use(label)) store.setFocus(label); };
     const onCycle = () => { store.focusNext(); const f = store.getState().focusLabel; if (f) smTui.use(f); };
-    const dispatchWrapped = (line, opts) => { const r = dispatchTui(line, opts); Promise.resolve(r).finally?.(syncFocus); syncFocus(); return r; };
+    const dispatchWrapped = (line, opts) => {
+      const source = opts?.source ?? "human";   // default human; don't miss echo when opts omitted
+      const label = smTui.currentLabel;          // capture target label BEFORE dispatch (currentLabel may change during)
+      const r = dispatchTui(line, opts);
+      // Only echo a plain-text message that actually enqueued: plain text → {redraw:false} on success,
+      // {redraw:true} on failure (no session/busy). Slash/@/$ are commands, not echoed. (repl-dispatch.mjs:230-232)
+      if (source === "human" && label && !/^[/@$]/.test(line) && r?.redraw === false) store.pushUser(label, line);
+      Promise.resolve(r).finally?.(syncFocus); syncFocus(); return r;
+    };
 
     const flowList = await (async () => { try { return (await discoverFlows(flowsRootTui)).flows?.map((f) => f.name) ?? []; } catch { return []; } })();
     const hintsCtx = {

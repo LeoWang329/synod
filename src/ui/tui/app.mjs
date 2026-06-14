@@ -18,6 +18,10 @@ export function App({ store, dispatch, hintsCtx, mesh, onSelect, onCycle, onInte
   useEffect(() => store.subscribe(() => force((n) => n + 1)), [store]);
 
   const st = store.getState();
+  const [selIdx, setSelIdx] = useState(-1);
+  // selIdx indexes the CURRENT session's entries; reset on focus/session switch
+  // (so Ctrl-E never mis-collapses a same-index card in another session).
+  useEffect(() => { setSelIdx(-1); }, [st.focusLabel]);
   const hints = computeHints(value, hintsCtx);
 
   useInput((input, key) => {
@@ -41,6 +45,25 @@ export function App({ store, dispatch, hintsCtx, mesh, onSelect, onCycle, onInte
     }
     if (key.ctrl && input === "o") { dispatch("/open", { source: "human" }); return; }
     if (key.ctrl && input === "w" && st.focusLabel) { dispatch(`/close ${st.focusLabel}`, { source: "human" }); return; }
+    if (key.ctrl && input === "e") {
+      const st2 = store.getState();
+      const ent = (st2.sessions[st2.focusLabel]?.entries) || [];
+      let idx = (selIdx >= 0 && ent[selIdx]?.type === "tool") ? selIdx
+        : (() => { for (let i = ent.length - 1; i >= 0; i--) if (ent[i].type === "tool") return i; return -1; })();
+      if (idx >= 0) store.toggleEntry(st2.focusLabel, idx);
+      return;
+    }
+    if (key.upArrow || key.downArrow) {
+      const st2 = store.getState();
+      const ent = (st2.sessions[st2.focusLabel]?.entries) || [];
+      const tools = ent.map((e, i) => e.type === "tool" ? i : -1).filter((i) => i >= 0);
+      if (tools.length) {
+        const cur = tools.indexOf(selIdx);
+        const next = key.upArrow ? (cur <= 0 ? tools.length - 1 : cur - 1) : (cur < 0 || cur >= tools.length - 1 ? 0 : cur + 1);
+        setSelIdx(tools[next]);
+      }
+      return;
+    }
     if (input && !key.ctrl && !key.meta) {
       const next = valueRef.current + input;
       valueRef.current = next;
@@ -51,7 +74,7 @@ export function App({ store, dispatch, hintsCtx, mesh, onSelect, onCycle, onInte
   const running = Object.values(st.sessions).filter((s) => s.status === "running").length;
   return html`<${Box} flexDirection="column" width="100%">
     <${Box} flexGrow=${1}>
-      <${FocusPane} label=${st.focusLabel} sess=${st.sessions[st.focusLabel]} fence=${st.fences[st.focusLabel] || null} relays=${st.relays} />
+      <${FocusPane} label=${st.focusLabel} sess=${st.sessions[st.focusLabel]} fence=${st.fences[st.focusLabel] || null} relays=${st.relays} selectedIndex=${selIdx} />
       <${AgentRail} sessions=${st.sessions} order=${st.order} focusLabel=${st.focusLabel} relays=${st.relays} />
     <//>
     <${SystemStrip} messages=${st.system} />
