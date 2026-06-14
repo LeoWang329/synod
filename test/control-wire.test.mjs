@@ -549,3 +549,72 @@ it("B4 drainControl 循环排到静默:在飞 dispatch 期间新增的 in-flight
   assert.equal(drained, true);
   assert.equal(secondDone, true);
 });
+
+describe("wireControl onFence (C 编排意图数据)", () => {
+  const flush = async () => { for (let i = 0; i < 3; i++) await new Promise(r => setImmediate(r)); };
+
+  it("fence turn → onFence(label, {commands:[{cmd,result}], feedbackSent:true})", async () => {
+    const sm = fakeSm({ _sessions: [["omp#1", {}]] });
+    const seen = [];
+    const dispatch = fakeDispatch({ "/open --agent codex|0": { ok: true, label: "codex#1" } });
+    const { onTurnComplete } = wireControl({
+      sm, registry: fakeRegistry(), stderr: captureStream(), dispatch,
+      onFence: (label, fence) => seen.push({ label, fence }),
+    });
+    await onTurnComplete("omp#1", { text: "```synod\n/open --agent codex\n```" });
+    await flush();
+    assert.strictEqual(seen.length, 1);
+    assert.strictEqual(seen[0].label, "omp#1");
+    assert.deepStrictEqual(seen[0].fence.commands, [{ cmd: "/open --agent codex", result: "ok · session codex#1" }]);
+    assert.strictEqual(seen[0].fence.feedbackSent, true);
+  });
+
+  it("feedbackSent=false when originator gone (enqueue returns false)", async () => {
+    const sm = fakeSm({ _sessions: [["omp#1", {}]], enqueueResult: false });
+    const seen = [];
+    const dispatch = fakeDispatch({ "/open --agent codex|0": { ok: true, label: "codex#1" } });
+    const { onTurnComplete } = wireControl({
+      sm, registry: fakeRegistry(), stderr: captureStream(), dispatch,
+      onFence: (label, fence) => seen.push(fence),
+    });
+    await onTurnComplete("omp#1", { text: "```synod\n/open --agent codex\n```" });
+    await flush();
+    assert.strictEqual(seen[0].feedbackSent, false);
+  });
+
+  it("rejected command → result 带 error reason", async () => {
+    const sm = fakeSm({ _sessions: [["omp#1", {}]] });
+    const seen = [];
+    const dispatch = fakeDispatch({ "/open --write|0": { ok: false, reason: "write denied" } });
+    const { onTurnComplete } = wireControl({
+      sm, registry: fakeRegistry(), stderr: captureStream(), dispatch,
+      onFence: (label, fence) => seen.push(fence),
+    });
+    await onTurnComplete("omp#1", { text: "```synod\n/open --write\n```" });
+    await flush();
+    assert.deepStrictEqual(seen[0].commands, [{ cmd: "/open --write", result: "error: write denied" }]);
+  });
+
+  it("不传 onFence → fence turn 不抛", async () => {
+    const sm = fakeSm({ _sessions: [["omp#1", {}]] });
+    const { onTurnComplete } = wireControl({
+      sm, registry: fakeRegistry(), stderr: captureStream(), dispatch: fakeDispatch(),
+    });
+    await assert.doesNotReject(async () => {
+      await onTurnComplete("omp#1", { text: "```synod\n/open --agent omp\n```" });
+      await flush();
+    });
+  });
+
+  it("fence-less turn → onFence 不被调", async () => {
+    const seen = [];
+    const sm = fakeSm({ _sessions: [["omp#1", {}]] });
+    const { onTurnComplete } = wireControl({
+      sm, registry: fakeRegistry(), stderr: captureStream(), dispatch: fakeDispatch(),
+      onFence: () => seen.push(1),
+    });
+    await onTurnComplete("omp#1", { text: "just prose" });
+    await flush();
+    assert.strictEqual(seen.length, 0);
+  });
+});

@@ -21,7 +21,7 @@ import { extractFenceCommands } from "./control-fence.mjs";
  * @param {function} deps.dispatch — agent-fence dispatch (from createReplDispatch)
  * @returns {{ onTurnComplete: (label: string, result: { text: string }) => Promise<void>, drainControl: () => Promise<void> }}
  */
-export function wireControl({ sm, registry, stderr, dispatch }) {
+export function wireControl({ sm, registry, stderr, dispatch, onFence = () => {} }) {
   // Per-label depth tracking: when a session's turn produces a /open,
   // the child gets depth + 1.  Wire layer maintains this map; dispatch
   // receives depth as an input parameter.
@@ -60,47 +60,42 @@ export function wireControl({ sm, registry, stderr, dispatch }) {
     // propagate to the turn-completion caller.
     const task = (async () => {
       const depth = _depthMap.get(label) ?? 0;
-
-      // Per-command outcome lines, fed back to the originating session so the
-      // agent learns the labels it created (/open) and any rejections — without
-      // this it opens a child it cannot address.  See feedback enqueue below.
       const feedback = [];
+      const commands = [];   // C 编排意图:结构化命令+结果,喂给 onFence
 
       for (const line of lines) {
+        let result;
         let r;
         try {
           r = await dispatch(line, { source: "agent-fence", depth });
         } catch {
-          // Dispatch itself should not throw (all rejections are returned
-          // as {ok:false}), but guard against unexpected errors.
-          feedback.push(`${line} → error: dispatch threw`);
+          result = "error: dispatch threw";
+          feedback.push(`${line} → ${result}`);
+          commands.push({ cmd: line, result });
           continue;
         }
 
         if (r && r.ok && r.label) {
-          // Child session created — record its depth
           _depthMap.set(r.label, depth + 1);
-          feedback.push(`${line} → ok · session ${r.label}`);
+          result = `ok · session ${r.label}`;
         } else if (r && r.ok) {
-          feedback.push(`${line} → ok`);
+          result = "ok";
         } else if (r && !r.ok && r.reason) {
           stderr.write(`[control warn] ${r.reason}\n`);
-          feedback.push(`${line} → error: ${r.reason}`);
+          result = `error: ${r.reason}`;
         } else {
-          feedback.push(`${line} → error: unknown result`);
+          result = "error: unknown result";
         }
+        feedback.push(`${line} → ${result}`);
+        commands.push({ cmd: line, result });
       }
 
-      // Close the loop: one consolidated, attributed message back to the
-      // originator.  Enqueue (not stderr) so it becomes the agent's next-turn
-      // context — the same channel relay uses.  A turn with no fence produces
-      // no feedback, so this does not perpetuate itself: it terminates when the
-      // agent stops emitting fences.  If the originator was closed meanwhile,
-      // sm.enqueue returns false and writes a "No session" diagnostic — safe,
-      // just discarded (the agent is gone, so there is nobody to inform).
+      let feedbackSent = false;
       if (feedback.length) {
-        sm.enqueue({ target: label, msg: `[synod fence result]\n${feedback.join("\n")}` });
+        const sent = sm.enqueue({ target: label, msg: `[synod fence result]\n${feedback.join("\n")}` });
+        feedbackSent = sent !== false;   // 发起 agent 仍在 = 真回喂到;已关停 = false
       }
+      onFence(label, { commands, feedbackSent });
     })();
     _inflight.add(task);
     task.catch(() => {}).finally(() => _inflight.delete(task));
