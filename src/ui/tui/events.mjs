@@ -5,8 +5,10 @@ export function defaultAdapter({ channel, payload }) {
   if (channel === "delta" && typeof payload === "string") return { kind: "message.delta", text: payload };
   if (channel === "status" && payload && typeof payload === "object")
     return { kind: "status", status: payload.status, isStreaming: Boolean(payload.isStreaming) };
+  if (channel === "toolevent") return null; // 默认不消费工具事件;由 omp/codex 适配器接管
   return null; // P1:event 原始流暂不消费(P2 由 omp/codex 适配器接管)
 }
 const _adapters = new Map();
 export function registerEventAdapter(agent, normalize) { _adapters.set(agent, normalize); }
 export function getEventAdapter(agent) { return _adapters.get(agent) || defaultAdapter; }
+export function resetEventAdapters() { _adapters.clear(); } // 仅供测试隔离用
