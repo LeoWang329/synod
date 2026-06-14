@@ -19,12 +19,30 @@ test("AgentRail 列出所有 label", () => {
   assert.match(lastFrame(), /omp#1/); assert.match(lastFrame(), /codex#1/);
 });
 test("FocusPane 头部含 model/turn,正文含 assistantText", () => {
-  const { lastFrame } = render(html`<${FocusPane} label="omp#1" sess=${sessions["omp#1"]} fence=${null} relays=${[]} />`);
+  const sessFix = { ...sessions["omp#1"], entries: [{ type: "assistant", text: "分析中..." }] };
+  const { lastFrame } = render(html`<${FocusPane} label="omp#1" sess=${sessFix} fence=${null} relays=${[]} />`);
   assert.match(lastFrame(), /omp#1/); assert.match(lastFrame(), /deepseek-v4-pro/); assert.match(lastFrame(), /分析中/);
 });
 test("FocusPane 无会话时给提示", () => {
   const { lastFrame } = render(html`<${FocusPane} label=${null} sess=${undefined} fence=${null} relays=${[]} />`);
   assert.match(lastFrame(), /无会话|\^O/);
+});
+test("FocusPane 渲 entries 时间线:user/assistant/tool 混排", () => {
+  const sess = {
+    agent: "omp", model: "m", effort: null, status: "running", isStreaming: true, turn: 1, ms: null,
+    assistantText: "尾", lastLine: "尾",
+    entries: [
+      { type: "user", text: "做点事" },
+      { type: "assistant", text: "好的,我先读文件" },
+      { type: "tool", id: "t1", name: "read_file", args: { path: "a" }, status: "done", ok: true, output: "x", diff: null, expanded: false },
+      { type: "assistant", text: "读完了" },
+    ],
+  };
+  const f = render(html`<${FocusPane} label="omp#1" sess=${sess} fence=${null} relays=${[]} selectedIndex=${-1} />`).lastFrame();
+  assert.match(f, /做点事/);
+  assert.match(f, /我先读文件/);
+  assert.match(f, /read_file/);
+  assert.match(f, /读完了/);
 });
 test("CollapsibleStrip 折叠只显摘要,展开显明细", () => {
   assert.match(render(html`<${CollapsibleStrip} label="编排意图" summary="3 cmds" expanded=${false} detail="x" />`).lastFrame(), /3 cmds/);
