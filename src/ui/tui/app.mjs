@@ -22,6 +22,9 @@ export function App({ store, dispatch, hintsCtx, mesh, onSelect, onCycle, onInte
   // selIdx indexes the CURRENT session's entries; reset on focus/session switch
   // (so Ctrl-E never mis-collapses a same-index card in another session).
   useEffect(() => { setSelIdx(-1); }, [st.focusLabel]);
+  const [expandC, setExpandC] = useState(false);
+  const [expandD, setExpandD] = useState(false);
+  useEffect(() => { setExpandC(false); setExpandD(false); }, [st.focusLabel]);
   const hints = computeHints(value, hintsCtx);
 
   useInput((input, key) => {
@@ -64,6 +67,13 @@ export function App({ store, dispatch, hintsCtx, mesh, onSelect, onCycle, onInte
       }
       return;
     }
+    if (key.ctrl && input === "g") {
+      const willExpand = !expandC;
+      setExpandC(willExpand);
+      if (willExpand && st.focusLabel) store.markFenceSeen(st.focusLabel);   // 展开 C = 读过 → 清 hot
+      return;
+    }
+    if (key.ctrl && input === "t") { setExpandD((v) => !v); return; }
     if (input && !key.ctrl && !key.meta) {
       const next = valueRef.current + input;
       valueRef.current = next;
@@ -74,7 +84,7 @@ export function App({ store, dispatch, hintsCtx, mesh, onSelect, onCycle, onInte
   const running = Object.values(st.sessions).filter((s) => s.status === "running").length;
   return html`<${Box} flexDirection="column" width="100%">
     <${Box} flexGrow=${1}>
-      <${FocusPane} label=${st.focusLabel} sess=${st.sessions[st.focusLabel]} fence=${st.fences[st.focusLabel] || null} relays=${st.relays} selectedIndex=${selIdx} />
+      <${FocusPane} label=${st.focusLabel} sess=${st.sessions[st.focusLabel]} fence=${st.fences[st.focusLabel] || null} relays=${st.relays} selectedIndex=${selIdx} expandC=${expandC} expandD=${expandD} />
       <${AgentRail} sessions=${st.sessions} order=${st.order} focusLabel=${st.focusLabel} relays=${st.relays} />
     <//>
     <${SystemStrip} messages=${st.system} />
