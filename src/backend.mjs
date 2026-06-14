@@ -274,11 +274,15 @@ export function emitToolEventFromOmp(emitter, message) {
 // Only known tool item types are forwarded (allowlist) to avoid promoting
 // reasoning / todoList / agentMessage items to tool cards in the TUI.
 // The envelope { type:"tool.item", item } preserves the full item payload.
+// codex v2 ThreadItem 工具型 type(已对 codex-cli 0.138.0 schema 核实);图片类
+// imageView/imageGeneration 暂不做卡。patchApply 不是合法 ThreadItem.type
+// (补丁状态挂在 fileChange.status 的 PatchApplyStatus 上),故不在此列。
 const CODEX_TOOL_ITEM_TYPES = new Set([
   "commandExecution",
   "fileChange",
   "mcpToolCall",
-  "patchApply",
+  "dynamicToolCall",
+  "collabAgentToolCall",
   "webSearch",
 ]);
 export function emitToolEventFromCodexItem(emitter, item) {
