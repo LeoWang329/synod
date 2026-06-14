@@ -68,11 +68,15 @@ export function createStore() {
     attachSession(label, session, agent, { model = null, effort = null } = {}) {
       const s = ensure(label); s.agent = agent; s.model = model; s.effort = effort;
       if (!state.focusLabel) state.focusLabel = label;
-      const normalize = getEventAdapter(agent);
-      session.on("delta", (d) => apply(label, normalize({ channel: "delta", payload: d, agent })));
-      session.on("status", (st) => apply(label, normalize({ channel: "status", payload: st, agent })));
-      session.on("event", (e) => apply(label, normalize({ channel: "event", payload: e, agent })));
-      session.on("toolevent", (e) => apply(label, normalize({ channel: "toolevent", payload: e, agent })));
+      // Resolve the adapter per-event (lazy), NOT once at attach: a session can be attached
+      // before its agent's adapter is registered (cli opens the default session before startTui
+      // registers omp/codex adapters). Capturing once would freeze it to defaultAdapter and
+      // silently drop toolevents. getEventAdapter falls back to defaultAdapter, never undefined.
+      const norm = (channel, payload) => apply(label, getEventAdapter(agent)({ channel, payload, agent }));
+      session.on("delta", (d) => norm("delta", d));
+      session.on("status", (st) => norm("status", st));
+      session.on("event", (e) => norm("event", e));
+      session.on("toolevent", (e) => norm("toolevent", e));
       session.on("error", (err) => { state.system.push(`[${label}] ${err?.message ?? err}`); trimSystem(); notify(); });
       notify();
     },
