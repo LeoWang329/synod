@@ -21,3 +21,7 @@ test("toolevent tool_execution_end → tool.end(取 result.content[].text 拼接
 test("event 通道(压缩流)P2 仍不消费 → null(工具走 toolevent)", () => {
   assert.strictEqual(ompAdapter({ channel: "event", payload: { type: "tool_execution_start" } }), null);
 });
+test("tool_execution_end 带 isError:true → ok:false", () => {
+  const ev = ompAdapter({ channel: "toolevent", payload: { type: "tool_execution_end", toolCallId: "t9", isError: true, result: { content: [{ text: "boom" }] } } });
+  assert.strictEqual(ev.ok, false);
+});

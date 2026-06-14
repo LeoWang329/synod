@@ -14,7 +14,7 @@ export function ompAdapter({ channel, payload }) {
     if (payload.type === "tool_execution_start")
       return { kind: "tool.start", id: payload.toolCallId, name: payload.toolName, args: payload.args ?? null, intent: payload.intent ?? null };
     if (payload.type === "tool_execution_end")
-      return { kind: "tool.end", id: payload.toolCallId, ok: payload.error == null, output: ompText(payload.result), diff: payload.diff ?? null };
+      return { kind: "tool.end", id: payload.toolCallId, ok: payload.error == null && payload.isError !== true, output: ompText(payload.result), diff: payload.diff ?? null };
   }
   return null; // event(压缩流)P2 不消费
 }
