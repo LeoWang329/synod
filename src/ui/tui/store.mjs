@@ -1,6 +1,7 @@
 // src/ui/tui/store.mjs — TUI 状态容器(纯逻辑,React 之外,可单测)。
 // P1:每个 session 只保留"当前 turn 的流式 assistant 文本"(非完整 timeline,见计划头部说明)。
 import { getEventAdapter } from "./events.mjs";
+import { fenceBreadcrumb } from "./breadcrumbs.mjs";
 const MAX_SYSTEM = 100;
 const MAX_ENTRIES = 300;   // 时间线条目上限,防内存无界
 const MAX_FENCE_CMDS = 200;   // C 编排意图累积命令上限,防无界
@@ -100,8 +101,14 @@ export function createStore() {
       f.commands = f.commands.concat(fence.commands || []);
       while (f.commands.length > MAX_FENCE_CMDS) f.commands.shift();
       f.feedbackSent = Boolean(fence.feedbackSent);
-      f.seen = false;   // 新编排到达 → 触发 hot
+      f.seen = false;   // 新编排到达 → 触发 hot(旧 C 条遗留,无害)
       state.fences[label] = f;
+      // 新:每条命令翻成流内面包屑条目(供对话流渲染;不再依赖底部 C 折叠条)
+      const s = state.sessions[label];
+      if (s) {
+        for (const c of (fence.commands || [])) s.entries.push({ type: "breadcrumb", text: fenceBreadcrumb(c.cmd, c.result) });
+        trimEntries(s);
+      }
       notify();
     },
     markFenceSeen(label) {

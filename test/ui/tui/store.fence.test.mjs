@@ -45,3 +45,21 @@ test("dropSession 清除 fences[label](不悬挂)", () => {
   store.dropSession("omp#1");
   assert.strictEqual(store.getState().fences["omp#1"], undefined);
 });
+
+import { EventEmitter as EE2 } from "node:events";
+test("appendFence 向发起会话 entries 推 breadcrumb 条目(每命令一条)", () => {
+  const store = createStore();
+  store.attachSession("omp#1", new EE2(), "omp", {});
+  store.appendFence("omp#1", { commands: [
+    { cmd: "/open --agent codex", result: "ok · session codex#1" },
+    { cmd: "@codex#1 核对", result: "ok" },
+  ], feedbackSent: true });
+  const ent = store.getState().sessions["omp#1"].entries.filter((e) => e.type === "breadcrumb");
+  assert.strictEqual(ent.length, 2);
+  assert.strictEqual(ent[0].text, "开了 codex#1");
+  assert.strictEqual(ent[1].text, "给 codex#1 派了活");
+});
+test("appendFence 对未 attach 的 label 不抛(无 entries 可推)", () => {
+  const store = createStore();
+  assert.doesNotThrow(() => store.appendFence("ghost", { commands: [{ cmd: "/open", result: "ok" }], feedbackSent: false }));
+});
