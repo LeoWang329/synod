@@ -246,6 +246,26 @@ describe("main()", () => {
       else process.env.SYNOD_HOME = savedHome;
     }
   });
+
+  it("main() 注入 progress 时,flow 事件汇入注入的 sink(不再只走 stdout)", async () => {
+    const events = [];
+    const sink = { emit(ev) { events.push(ev); } };
+    const stdout = collector();
+    const stderr = collector();
+    const code = await main({
+      argv: ["linear"],
+      progress: sink,
+      openBackend: fakeOpenBackend,
+      workflowsRoot: VALID_DIR,
+      stdout, stderr,
+      fs: noopFs,
+    });
+    assert.strictEqual(code, 0, `expected exit 0, stderr: ${stderr.text()}`);
+    assert.ok(
+      events.some((e) => e.type === "delta" || e.type === "start" || e.type === "opening"),
+      "注入的 sink 应收到至少一个 progress 事件",
+    );
+  });
 });
 
 describe("standalone exit cleanup (P2-43)", () => {

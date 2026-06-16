@@ -257,6 +257,7 @@ export async function main({
   // falls back to defaultIo() (its own readline) and no external signal.
   io: injectedIo,
   signal: externalSignal,
+  progress: injectedProgress,   // TUI 注入:结构化进度事件汇(替代默认的 stdout 文本 reporter)
   // Inject real fs by default; tests pass a noop/in-memory sink
   fs: realFs = { writeFile, appendFile, mkdir },
   runsRoot: runsRootOpt,
@@ -345,7 +346,7 @@ export async function main({
   const progressEnabled = args.progress || process.env.SYNOD_PROGRESS === "1";
   const baseSink = progressEnabled ? createDefaultProgressSink(stdout) : undefined;
   const view = progressEnabled ? createFlowView({ stdout, name: args.name, clock: () => Date.now(), env }) : null;
-  const progressSink = view ? view.countingSink(baseSink) : baseSink;
+  const progressSink = injectedProgress ?? (view ? view.countingSink(baseSink) : baseSink);
 
   // per-run 目录由 logger 的 ensureRunDir 负责;不再在 cwd 建 artifacts。
   // SYNOD_HOME 对齐:cli.mjs --runs 也用 SYNOD_HOME,两者必须一致(A3)。
