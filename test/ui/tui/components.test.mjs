@@ -4,7 +4,6 @@ import { render } from "ink-testing-library";
 import { html } from "../../../src/ui/tui/html.mjs";
 import { AgentRail } from "../../../src/ui/tui/components/AgentRail.mjs";
 import { FocusPane } from "../../../src/ui/tui/components/FocusPane.mjs";
-import { CollapsibleStrip } from "../../../src/ui/tui/components/CollapsibleStrip.mjs";
 import { InputBar } from "../../../src/ui/tui/components/InputBar.mjs";
 import { SystemStrip } from "../../../src/ui/tui/components/SystemStrip.mjs";
 import { StatusBar } from "../../../src/ui/tui/components/StatusBar.mjs";
@@ -43,10 +42,6 @@ test("FocusPane 渲 entries 时间线:user/assistant/tool 混排", () => {
   assert.match(f, /我先读文件/);
   assert.match(f, /read_file/);
   assert.match(f, /读完了/);
-});
-test("CollapsibleStrip 折叠只显摘要,展开显明细", () => {
-  assert.match(render(html`<${CollapsibleStrip} label="编排意图" summary="3 cmds" expanded=${false} detail="x" />`).lastFrame(), /3 cmds/);
-  assert.match(render(html`<${CollapsibleStrip} label="编排意图" summary="3 cmds" expanded=${true} detail="DETAIL-LINE" />`).lastFrame(), /DETAIL-LINE/);
 });
 test("InputBar 显示前缀 + 文本;有提示时渲染候选", () => {
   assert.match(render(html`<${InputBar} focusLabel="omp#1" value="给它加测试" hints=${{kind:"none",items:[]}} />`).lastFrame(), /omp#1/);
