@@ -1,6 +1,9 @@
 // src/ui/tui/flow-tui.mjs — 把 flow 引擎运行投影进 TUI store(只读会话卡 + approve 经输入框作答)。
 // 不碰真 stdout(全屏 alt-screen):flow 的 progress/io/signal 三个注入接缝在此装配。
 import { main as realFlowMain } from "../../flow.mjs";
+import path from "node:path";
+import os from "node:os";
+import { prepareResume } from "../../flow/replay.mjs";
 
 const DROP_DELAY_MS = 3000;
 const shortAgent = (label) => label.replace(/^⑂/, "").replace(/#.*$/, "").replace(/:.*$/, "");
@@ -76,7 +79,7 @@ export function createFlowTui({ store, openBackend, workflowsRoot, cwd, config, 
     return p;
   }
 
-  return {
+  const api = {
     runFlow: (argv) => start(argv),
     flowStatus: () => (activeFlows.size > 0 ? `${activeFlows.size} running` : "none"),
     abortAll: () => { for (const { ctrl } of activeFlows.values()) ctrl.abort(); },
@@ -89,7 +92,20 @@ export function createFlowTui({ store, openBackend, workflowsRoot, cwd, config, 
       pr.resolve(line);
       return true;
     },
-    // resumeFlow / handleHumanLine 在 Task 4 加入
-    _start: start,   // 供 resumeFlow 复用(Task 4)
+    resumeFlow: async (runId) => {
+      const runsRoot = path.resolve(env.SYNOD_HOME || os.homedir(), ".synod", "runs");
+      let r;
+      try { r = await prepareResume(runsRoot, runId); }
+      catch (err) { store.pushSystem(`/resume: ${err.message}`); return; }
+      return start([r.flowName], { resume: { runId: r.runId, input: r.input, steps: r.steps }, cwd: r.cwd, runsRoot });
+    },
+    handleHumanLine(label, line) {
+      const s = store.getState().sessions[label];
+      if (!s || s.kind !== "flow") return false;     // 非 flow → 交回普通 dispatch
+      if (s.pendingQuestion != null) { api.answer(label, line); return true; }
+      store.pushSystem("⑂ 这是 flow 会话,不能直接发消息(只能在它请求确认时作答)");
+      return true;
+    },
   };
+  return api;
 }

@@ -101,3 +101,25 @@ test("answer 后移除 abort 监听器(不泄漏)", async () => {
   await p;
   assert.strictEqual(getEventListeners(sig, "abort").length, 0, "answered questions 不应残留 abort 监听器");
 });
+
+test("handleHumanLine:flow 会话有待答 → 作答并吞掉;无待答 → 系统消息拒绝;非 flow → 不处理", async () => {
+  const flowMain = async ({ progress, io }) => { progress.emit({ type: "start", agent: "review", model: null }); await io.question("?", {}); return 0; };
+  const { store, ft } = mk(flowMain);
+  const p = ft.runFlow(["demo"]);
+  await new Promise((r) => setTimeout(r, 10));
+  const fl = store.getState().order.find((l) => l.startsWith("⑂review"));
+  // 有待答 → 作答
+  assert.strictEqual(ft.handleHumanLine(fl, "y"), true);
+  assert.strictEqual(store.getState().sessions[fl].pendingQuestion, null);
+  await p;
+  // 非 flow 会话(不存在)→ 不处理
+  assert.strictEqual(ft.handleHumanLine("omp#1", "hi"), false);
+});
+
+test("handleHumanLine:flow 会话无待答 → 拒绝(系统消息),不处理给后端", () => {
+  const { store, ft } = mk(async () => 0);
+  store.attachFlowAgent("⑂x#f9", { flowId: "f9", agent: "x", model: null });
+  const before = store.getState().system.length;
+  assert.strictEqual(ft.handleHumanLine("⑂x#f9", "hi"), true);
+  assert.ok(store.getState().system.length > before);
+});
