@@ -1,10 +1,24 @@
 // src/ui/tui/index.mjs — 启动/拆除全屏 TUI。Ink 动态 import(核心零依赖路径不触发)。
-import { MOUSE_ON, MOUSE_OFF, drainMouse, isLeftClick, RegionRegistry } from "./mouse.mjs";
+import { PassThrough } from "node:stream";
+import { MOUSE_ON, MOUSE_OFF, createStdinSplitter, isLeftClick, RegionRegistry } from "./mouse.mjs";
 
 export const ENTER_ALT = "\x1b[?1049h";
 export const EXIT_ALT = "\x1b[?1049l";
 const HIDE_CURSOR = "\x1b[?25l";
 const SHOW_CURSOR = "\x1b[?25h";
+
+// Ink 用 readable/read() 读输入(不是 data 事件),并要求 isTTY/setRawMode/setEncoding/ref/unref。
+// 这个代理流只承载「键盘字节」:本模块独占读真 stdin、剥离鼠标后写入它;Ink 从它读 → 鼠标字节
+// 永不进入 useInput(否则会被当普通文本插入输入框,即「动鼠标输入框冒字符」的根因)。
+// setRawMode 转发到真 stdin;isTTY 如实映射(非 TTY 时 Ink 仍照常报 raw 不支持,与改动前一致)。
+export function createInkStdin(realStdin) {
+  const proxy = new PassThrough();
+  proxy.isTTY = Boolean(realStdin.isTTY);
+  proxy.setRawMode = (mode) => { realStdin.setRawMode?.(mode); return proxy; };
+  if (typeof proxy.ref !== "function") proxy.ref = () => proxy;
+  if (typeof proxy.unref !== "function") proxy.unref = () => proxy;
+  return proxy;
+}
 
 export function buildTeardown(stdout) {
   let done = false;
@@ -47,12 +61,13 @@ export async function startTui({ store, dispatch, hintsCtx, mesh, onSelect, onCy
   const onResize = () => relayout();
   stdout.on?.("resize", onResize);
 
-  // 缓冲式鼠标:累积 stdin,循环提取完整 SGR 事件,只对左键 click 命中右栏卡 → onSelect。
-  let mbuf = "";
+  // stdin 解复用:本模块独占读真 stdin → 拆出鼠标事件(命中右栏卡 → onSelect)与键盘 passthrough;
+  // 键盘字节写入 inkStdin 代理流交给 Ink。鼠标 SGR 序列就此被剥离,不会泄漏成输入框文本。
+  const inkStdin = createInkStdin(stdin);
+  const split = createStdinSplitter();
   function onData(chunk) {
-    mbuf += chunk.toString("utf8");
-    const { events, rest } = drainMouse(mbuf);
-    mbuf = rest.length < 64 ? rest : "";   // 防御:异常超长残段丢弃
+    const { events, passthrough } = split(chunk.toString("utf8"));
+    if (passthrough) inkStdin.write(passthrough);
     for (const ev of events) {
       if (!isLeftClick(ev)) continue;
       const id = regions.hit(ev.x, ev.y);
@@ -63,10 +78,10 @@ export async function startTui({ store, dispatch, hintsCtx, mesh, onSelect, onCy
 
   const instance = render(
     React.createElement(App, { store, dispatch, hintsCtx, mesh, onSelect, onCycle, onInterrupt }),
-    { stdout, stdin, exitOnCtrlC: false },
+    { stdout, stdin: inkStdin, exitOnCtrlC: false },
   );
 
-  const cleanup = () => { stdin.off?.("data", onData); stdout.off?.("resize", onResize); unsub(); teardown(); };
+  const cleanup = () => { stdin.off?.("data", onData); stdout.off?.("resize", onResize); unsub(); teardown(); try { inkStdin.end(); } catch {} };
   instance.waitUntilExit().then(cleanup, cleanup);
   return {
     waitUntilExit: instance.waitUntilExit.bind(instance),
