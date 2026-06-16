@@ -26,6 +26,23 @@ export function createStore() {
     return state.sessions[label];
   }
   function trimEntries(s) { while (s.entries.length > MAX_ENTRIES) s.entries.shift(); }
+
+  // ── flow 伪会话:无真 session/适配器,由 flow-tui 的 progress/io 投影驱动 ──
+  function ensureFlow(label, { flowId, agent, model }) {
+    let s = state.sessions[label];
+    if (!s) {
+      s = state.sessions[label] = {
+        kind: "flow", flowId, agent: agent ?? "", model: model ?? null, effort: null,
+        status: "running", isStreaming: true, turn: 0,
+        assistantText: "", lastLine: "", turnStartAt: null, ms: null,
+        entries: [], _newAsst: false, pendingQuestion: null,
+      };
+      state.order.push(label);
+      if (!state.focusLabel) state.focusLabel = label;
+    }
+    return s;
+  }
+
   function pushNudgeToFocus(fromLabel, what) {
     const fl = state.focusLabel;
     if (!fl || fl === fromLabel) return;
@@ -130,6 +147,49 @@ export function createStore() {
       delete state.sessions[label];
       state.order = state.order.filter((l) => l !== label);
       if (state.focusLabel === label) state.focusLabel = state.order[state.order.length - 1] ?? null;
+      notify();
+    },
+    attachFlowAgent(label, meta) { ensureFlow(label, meta); notify(); },
+    appendFlowDelta(label, text) {
+      const s = state.sessions[label]; if (!s) return;
+      s.isStreaming = true;
+      const last = s.entries[s.entries.length - 1];
+      if (last && last.type === "assistant") last.text += text;
+      else s.entries.push({ type: "assistant", text });
+      trimEntries(s); notify();
+    },
+    appendFlowOutput(label, text) {
+      const s = state.sessions[label]; if (!s) return;
+      s.entries.push({ type: "output", text: String(text) }); trimEntries(s); notify();
+    },
+    setFlowAgentStatus(label, status) {
+      const s = state.sessions[label]; if (!s) return;
+      s.status = status; if (status === "done" || status === "failed") s.isStreaming = false; notify();
+    },
+    setFlowQuestion(label, prompt) {
+      const s = state.sessions[label]; if (!s) return;
+      s.pendingQuestion = prompt; s.status = "awaiting";
+      s.entries.push({ type: "approve", text: prompt }); trimEntries(s); notify();
+    },
+    resolveFlowQuestion(label) {
+      const s = state.sessions[label]; if (!s) return;
+      s.pendingQuestion = null; if (s.status === "awaiting") s.status = "running"; notify();
+    },
+    endFlow(flowId, { ok = true, summary = null } = {}) {
+      for (const l of state.order) {
+        const s = state.sessions[l];
+        if (s && s.kind === "flow" && s.flowId === flowId) {
+          s.status = ok ? "done" : "failed"; s.isStreaming = false; s.pendingQuestion = null;
+        }
+      }
+      if (summary) { state.system.push(summary); trimSystem(); }
+      notify();
+    },
+    dropFlow(flowId) {
+      const drop = state.order.filter((l) => { const s = state.sessions[l]; return s && s.kind === "flow" && s.flowId === flowId; });
+      for (const l of drop) delete state.sessions[l];
+      state.order = state.order.filter((l) => !drop.includes(l));
+      if (drop.includes(state.focusLabel)) state.focusLabel = state.order[state.order.length - 1] ?? null;
       notify();
     },
   };
