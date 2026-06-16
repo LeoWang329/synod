@@ -443,9 +443,8 @@ async function main({
       onSessionOpen: (label, session) => {
         const info = smTui._sessions.get(label);
         store.attachSession(label, session, info.agent, { model: info.model, effort: info.effort });
-        store.setRelays(registry.list());
       },
-      onTurnComplete: (label, result) => { if (composed) composed(label, result); store.setRelays(registry.list()); },
+      onTurnComplete: (label, result) => { if (composed) composed(label, result); },
       relays: () => registry.list(), env,
     });
     let _dropDepthTui = () => {};

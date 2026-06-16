@@ -4,12 +4,11 @@ import { getEventAdapter } from "./events.mjs";
 import { fenceBreadcrumb } from "./breadcrumbs.mjs";
 const MAX_SYSTEM = 100;
 const MAX_ENTRIES = 300;   // 时间线条目上限,防内存无界
-const MAX_FENCE_CMDS = 200;   // C 编排意图累积命令上限,防无界
 
 export function createStore() {
   const state = {
     sessions: {}, order: [], focusLabel: null,
-    system: [], relays: [], fences: {},
+    system: [],
   };
   const subs = new Set();
   const notify = () => { for (const fn of subs) fn(); };
@@ -119,30 +118,16 @@ export function createStore() {
       if (s && s.entries[index] && s.entries[index].type === "tool") { s.entries[index].expanded = !s.entries[index].expanded; notify(); }
     },
     pushSystem(line) { state.system.push(line); trimSystem(); notify(); },
-    setRelays(list) { state.relays = list; notify(); },
-    setFence(label, data) { state.fences[label] = data; notify(); },
     appendFence(label, fence) {
-      const f = state.fences[label] || { commands: [], feedbackSent: false, seen: true };
-      f.commands = f.commands.concat(fence.commands || []);
-      while (f.commands.length > MAX_FENCE_CMDS) f.commands.shift();
-      f.feedbackSent = Boolean(fence.feedbackSent);
-      f.seen = false;   // 新编排到达 → 触发 hot(旧 C 条遗留,无害)
-      state.fences[label] = f;
-      // 新:每条命令翻成流内面包屑条目(供对话流渲染;不再依赖底部 C 折叠条)
+      // 编排发生时,把每条命令翻成流内面包屑条目(供对话流渲染;无底部 C 折叠条)。
       const s = state.sessions[label];
-      if (s) {
-        for (const c of (fence.commands || [])) s.entries.push({ type: "breadcrumb", text: fenceBreadcrumb(c.cmd, c.result) });
-        trimEntries(s);
-      }
+      if (!s) return;
+      for (const c of (fence.commands || [])) s.entries.push({ type: "breadcrumb", text: fenceBreadcrumb(c.cmd, c.result) });
+      trimEntries(s);
       notify();
-    },
-    markFenceSeen(label) {
-      const f = state.fences[label];
-      if (f) { f.seen = true; notify(); }
     },
     dropSession(label) {
       delete state.sessions[label];
-      delete state.fences[label];
       state.order = state.order.filter((l) => l !== label);
       if (state.focusLabel === label) state.focusLabel = state.order[state.order.length - 1] ?? null;
       notify();
