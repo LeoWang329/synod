@@ -29,11 +29,11 @@ export function buildTeardown(stdout) {
 }
 
 // 右栏 agent 卡矩形(1-based)。右栏宽 30 贴右;rail 顶边框 1 行 + header 1 行 → 首卡从第 3 行起;
-// 每卡 borderStyle 占 7 行(见 AgentRail 固定高说明)。纯函数,便于单测。
+// 每卡 borderStyle(上下边框 2)+ 内容 3 行 = 5 行(见 AgentRail 固定高说明)。纯函数,便于单测。
 export function computeRailRegions(order, cols) {
   const x = (cols || 100) - 30 + 1;     // 1-based 左边界
   const regs = {};
-  order.forEach((label, i) => { regs[`agent:${label}`] = { x, y: 3 + i * 7, w: 30, h: 7 }; });
+  order.forEach((label, i) => { regs[`agent:${label}`] = { x, y: 3 + i * 5, w: 30, h: 5 }; });
   return regs;
 }
 
