@@ -81,37 +81,17 @@ test("↑/↓ 移动选中游标(经 selIdx,高亮 tool 卡)", async () => {
   assert.strictEqual(tool.expanded, true);
 });
 
-test("Ctrl-G 展开 C 编排意图折叠条并标记 fence 已读", async () => {
+test("Ctrl-G 跳到 awaiting 的后台 agent(经 onSelect)", async () => {
   const store = createStore();
-  store.attachSession("omp#1", new EventEmitter(), "omp", {});
-  store.appendFence("omp#1", { commands: [{ cmd: "/open --agent codex", result: "ok · session codex#1" }], feedbackSent: true });
-  const { stdin, lastFrame } = render(html`<${App} ...${base(store)} />`);
-  stdin.write("\x07");  // Ctrl-G
+  const a = new EventEmitter(), b = new EventEmitter();
+  store.attachSession("omp#1", a, "omp", {});   // 焦点
+  store.attachSession("omp#2", b, "omp", {});
+  b.emit("status", { status: "running", isStreaming: true });
+  b.emit("status", { status: "idle", isStreaming: false });   // omp#2 → awaiting
+  let picked = null;
+  const props = { ...base(store), onSelect: (l) => { picked = l; } };
+  const { stdin } = render(html`<${App} ...${props} />`);
+  stdin.write("\x07");   // Ctrl-G
   await new Promise((r) => setTimeout(r, 20));
-  assert.strictEqual(store.getState().fences["omp#1"].seen, true);   // 展开即已读
-  assert.match(lastFrame(), /\/open --agent codex/);                  // 明细可见
-});
-
-test("Ctrl-T 展开 D relay 折叠条", async () => {
-  const store = createStore();
-  store.attachSession("omp#1", new EventEmitter(), "omp", {});
-  store.attachSession("codex#1", new EventEmitter(), "codex", {});
-  store.setRelays([{ from: "omp#1", to: "codex#1" }]);
-  const { stdin, lastFrame } = render(html`<${App} ...${base(store)} />`);
-  stdin.write("\x14");  // Ctrl-T
-  await new Promise((r) => setTimeout(r, 20));
-  assert.match(lastFrame(), /out: codex#1/);                          // D 明细展开
-});
-
-test("Ctrl-G 连按两次:展开后再收起(toggle 回归)", async () => {
-  const store = createStore();
-  store.attachSession("omp#1", new EventEmitter(), "omp", {});
-  store.appendFence("omp#1", { commands: [{ cmd: "/open --agent codex", result: "ok · session codex#1" }], feedbackSent: true });
-  const { stdin, lastFrame } = render(html`<${App} ...${base(store)} />`);
-  stdin.write("\x07");  // 展开
-  await new Promise((r) => setTimeout(r, 20));
-  assert.match(lastFrame(), /\/open --agent codex/);
-  stdin.write("\x07");  // 再按 → 收起(每次按之间有 re-render,闭包读到最新 expandC)
-  await new Promise((r) => setTimeout(r, 20));
-  assert.ok(!lastFrame().includes("/open --agent codex"));            // 明细收起
+  assert.strictEqual(picked, "omp#2");
 });
