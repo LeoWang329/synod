@@ -27,6 +27,14 @@ export function createStore() {
     return state.sessions[label];
   }
   function trimEntries(s) { while (s.entries.length > MAX_ENTRIES) s.entries.shift(); }
+  function pushNudgeToFocus(fromLabel, what) {
+    const fl = state.focusLabel;
+    if (!fl || fl === fromLabel) return;
+    const fs = state.sessions[fl];
+    if (!fs) return;
+    fs.entries.push({ type: "nudge", text: `${fromLabel} ${what}`, target: fromLabel });
+    trimEntries(fs);
+  }
   function apply(label, ev) {
     if (!ev) return;
     const s = ensure(label);
@@ -36,6 +44,7 @@ export function createStore() {
       else if (ev.status === "idle") {
         s.turn += 1;
         if (s.turnStartAt != null) { s.ms = Date.now() - s.turnStartAt; s.turnStartAt = null; }
+        if (label !== state.focusLabel) { s.status = "awaiting"; pushNudgeToFocus(label, "跑完了"); }
       }
     } else if (ev.kind === "message.delta") {
       // P1 字段(AgentRail 依赖)
@@ -79,14 +88,30 @@ export function createStore() {
       session.on("status", (st) => norm("status", st));
       session.on("event", (e) => norm("event", e));
       session.on("toolevent", (e) => norm("toolevent", e));
-      session.on("error", (err) => { state.system.push(`[${label}] ${err?.message ?? err}`); trimSystem(); notify(); });
+      session.on("error", (err) => {
+        state.system.push(`[${label}] ${err?.message ?? err}`); trimSystem();
+        const es = state.sessions[label];
+        if (es && label !== state.focusLabel) { es.status = "awaiting"; pushNudgeToFocus(label, "出错了"); }
+        notify();
+      });
       notify();
     },
-    setFocus(label) { if (state.sessions[label]) { state.focusLabel = label; notify(); } },
+    setFocus(label) {
+      const s = state.sessions[label];
+      if (s) { if (s.status === "awaiting") s.status = "idle"; state.focusLabel = label; notify(); }
+    },
     focusNext() {
       if (state.order.length === 0) return;
       const i = state.order.indexOf(state.focusLabel);
-      state.focusLabel = state.order[(i + 1) % state.order.length]; notify();
+      const nl = state.order[(i + 1) % state.order.length];
+      state.focusLabel = nl;
+      const s = state.sessions[nl];
+      if (s && s.status === "awaiting") s.status = "idle";
+      notify();
+    },
+    firstAwaiting() {
+      for (const l of state.order) if (state.sessions[l] && state.sessions[l].status === "awaiting") return l;
+      return null;
     },
     pushUser(label, text) { const s = ensure(label); s.entries.push({ type: "user", text }); trimEntries(s); notify(); },
     toggleEntry(label, index) {
