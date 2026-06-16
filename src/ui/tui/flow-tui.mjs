@@ -8,7 +8,7 @@ const shortAgent = (label) => label.replace(/^⑂/, "").replace(/#.*$/, "").repl
 export function createFlowTui({ store, openBackend, workflowsRoot, cwd, config, env = process.env, flowMain = realFlowMain, dropDelayMs = DROP_DELAY_MS }) {
   let _seq = 0;
   const activeFlows = new Map();   // flowId → { ctrl }
-  const pending = new Map();       // label → { resolve, reject, flowId }
+  const pending = new Map();       // label → { resolve, reject, flowId, signal, onAbort }
 
   const keyOf = (flowId, agent, model) => `⑂${agent}${model ? ":" + model : ""}#${flowId}`;
 
@@ -24,7 +24,8 @@ export function createFlowTui({ store, openBackend, workflowsRoot, cwd, config, 
         if (ev.type === "opening" || ev.type === "start") {
           store.attachFlowAgent(label, { flowId, agent, model: ev.model ?? null });
         } else if (ev.type === "delta" && ev.text) {
-          store.attachFlowAgent(label, { flowId, agent, model: ev.model ?? null });
+          if (!store.getState().sessions[label])
+            store.attachFlowAgent(label, { flowId, agent, model: ev.model ?? null });
           store.appendFlowDelta(label, ev.text);
         }
       },
@@ -33,7 +34,7 @@ export function createFlowTui({ store, openBackend, workflowsRoot, cwd, config, 
 
   function makeIo(flowId, sink, flowName) {
     const targetLabel = () => (sink.last()?.label) || keyOf(flowId, flowName, null);
-    const cap = (s) => { const l = targetLabel(); store.appendFlowOutput(l, String(s)); return true; };
+    const cap = (s) => { const l = targetLabel(); store.appendFlowOutput(l, String(s)); return true; };   // write 返回 true = 无背压
     return {
       stdout: { write: cap }, stderr: { write: cap }, stdin: {},
       question(prompt, { signal } = {}) {
@@ -41,8 +42,8 @@ export function createFlowTui({ store, openBackend, workflowsRoot, cwd, config, 
         store.attachFlowAgent(label, { flowId, agent: shortAgent(label), model: null });
         store.setFlowQuestion(label, prompt);
         return new Promise((resolve, reject) => {
-          pending.set(label, { resolve, reject, flowId });
           const onAbort = () => { if (pending.delete(label)) reject(new Error("flow aborted")); };
+          pending.set(label, { resolve, reject, flowId, signal, onAbort });
           if (signal) {
             if (signal.aborted) return onAbort();
             signal.addEventListener("abort", onAbort, { once: true });
@@ -69,7 +70,7 @@ export function createFlowTui({ store, openBackend, workflowsRoot, cwd, config, 
       .catch((err) => { store.endFlow(flowId, { ok: false, summary: `flow ${flowName} 出错: ${err?.message ?? err}` }); return 1; })
       .finally(() => {
         activeFlows.delete(flowId);
-        for (const [label, pr] of [...pending]) if (pr.flowId === flowId) { pending.delete(label); pr.reject(new Error("flow ended")); }
+        for (const [label, pr] of [...pending]) if (pr.flowId === flowId) { pending.delete(label); pr.signal?.removeEventListener("abort", pr.onAbort); pr.reject(new Error("flow ended")); }
         setTimeout(() => store.dropFlow(flowId), dropDelayMs).unref?.();
       });
     return p;
@@ -83,6 +84,7 @@ export function createFlowTui({ store, openBackend, workflowsRoot, cwd, config, 
       const pr = pending.get(label);
       if (!pr) return false;
       pending.delete(label);
+      pr.signal?.removeEventListener("abort", pr.onAbort);
       store.resolveFlowQuestion(label);
       pr.resolve(line);
       return true;

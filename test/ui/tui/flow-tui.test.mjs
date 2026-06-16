@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert";
+import { getEventListeners } from "node:events";
 import { createStore } from "../../../src/ui/tui/store.mjs";
 import { createFlowTui } from "../../../src/ui/tui/flow-tui.mjs";
 
@@ -66,4 +67,37 @@ test("flowStatus:运行中计数,空闲 none", async () => {
   assert.match(ft.flowStatus(), /running/);
   release(); await p;
   assert.strictEqual(ft.flowStatus(), "none");
+});
+
+test("io.stdout.write 投影成 output 条目", async () => {
+  const flowMain = async ({ progress, io }) => {
+    progress.emit({ type: "start", agent: "planner", model: "m" });
+    io.stdout.write("行内输出");
+    return 0;
+  };
+  const { store, ft } = mk(flowMain);
+  await ft.runFlow(["demo"]);
+  const fl = store.getState().order.find((l) => l.startsWith("⑂planner"));
+  assert.ok(store.getState().sessions[fl].entries.some((e) => e.type === "output" && e.text === "行内输出"));
+});
+
+test("answer 后移除 abort 监听器(不泄漏)", async () => {
+  let sig;
+  const flowMain = async ({ progress, io, signal }) => {
+    sig = signal;
+    progress.emit({ type: "start", agent: "review", model: null });
+    await io.question("q1", { signal });
+    await io.question("q2", { signal });
+    return 0;
+  };
+  const { store, ft } = mk(flowMain);
+  const p = ft.runFlow(["demo"]);
+  await new Promise((r) => setTimeout(r, 10));
+  let fl = store.getState().order.find((l) => l.startsWith("⑂review"));
+  ft.answer(fl, "a1");
+  await new Promise((r) => setTimeout(r, 10));
+  fl = store.getState().order.find((l) => l.startsWith("⑂review"));
+  ft.answer(fl, "a2");
+  await p;
+  assert.strictEqual(getEventListeners(sig, "abort").length, 0, "answered questions 不应残留 abort 监听器");
 });
