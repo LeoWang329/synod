@@ -58,6 +58,6 @@ test("SystemStrip 渲染最近系统消息", () => {
 test("SystemStrip 空时不报错", () => {
   assert.doesNotThrow(() => render(html`<${SystemStrip} messages=${[]} />`));
 });
-test("StatusBar 显示运行数", () => {
-  assert.match(render(html`<${StatusBar} running=${1} mesh=${true} />`).lastFrame(), /1 running/);
+test("StatusBar 显示 agents 与待你计数", () => {
+  assert.match(render(html`<${StatusBar} agents=${2} awaiting=${0} mesh=${true} />`).lastFrame(), /2 agents/);
 });
