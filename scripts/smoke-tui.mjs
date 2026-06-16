@@ -143,22 +143,26 @@ async function main() {
   const toolCard3 = store.getState().sessions["omp#1"].entries.find((e) => e.type === "tool");
   ok("Ctrl-E again collapses (store.expanded=false)", toolCard3 && toolCard3.expanded === false);
 
-  // 7) C 编排意图:appendFence → C 摘要 + 未读 hot;Ctrl-G 展开读明细 + 清 hot;Ctrl-T 展开 D。
+  // 7) 编排面包屑 + 后台"待你" + Ctrl-G 跳转(替代旧 C/D 折叠条)。
+  // 7a) appendFence → 发起会话流里淡淡滚一行人话面包屑(瞬时,不再是底部折叠条)。
   store.appendFence("omp#1", { commands: [{ cmd: "/open --agent codex", result: "ok · session codex#1" }], feedbackSent: true });
   await sleep(40);
-  ok("C 摘要显示命令数 + 未读(seen=false)", stdout.text().includes("1 cmds") && store.getState().fences["omp#1"].seen === false);
+  ok("appendFence → 流内面包屑「开了 codex#1」", stdout.text().includes("开了 codex#1"));
 
-  stdin.write("\x07");  // Ctrl-G 展开 C
+  // 7b) 后台会话跑完一个 turn → 置 awaiting + 焦点流冒泡;状态栏"待你"计数 +1。
+  const bg = new EventEmitter(); bg.abort = () => {};
+  store.attachSession("omp#2", bg, "omp", {});   // 非焦点(焦点仍 omp#1)
+  bg.emit("status", { status: "running", isStreaming: true });
+  bg.emit("status", { status: "idle", isStreaming: false });
   await sleep(50);
-  ok("Ctrl-G 展开 C → 明细显示 cmd → result", stdout.text().includes("/open --agent codex"));
-  ok("Ctrl-G 标记 fence 已读(hot 清除)", store.getState().fences["omp#1"].seen === true);
+  ok("后台 omp#2 turn 结束 → awaiting", store.getState().sessions["omp#2"].status === "awaiting");
+  ok("焦点流冒泡「omp#2 跑完了 · ^G 去看」", stdout.text().includes("omp#2 跑完了") && stdout.text().includes("去看"));
+  ok("状态栏待你计数显示「1 待你」", stdout.text().includes("1 待你"));
 
-  const beforeCtrlT = stdout.text().length;
-  stdin.write("\x14");  // Ctrl-T 展开 D(本会话无 relay:验展开后渲染 D 明细 out:/in: 且不崩)
-  await sleep(40);
-  const afterCtrlT = stdout.text();
-  ok("Ctrl-T 展开 D → 新帧渲染 D 明细(out: —)且焦点仍在",
-    afterCtrlT.length > beforeCtrlT && afterCtrlT.includes("out: —") && afterCtrlT.includes("omp#1"));
+  // 7c) Ctrl-G 跳到 awaiting 的后台 agent(经 onSelect,不再是展开 C)。
+  stdin.write("\x07");  // Ctrl-G
+  await sleep(50);
+  ok("Ctrl-G → onSelect(omp#2)(跳到待你,不再展开 C)", selects.at(-1) === "omp#2");
 
   try { tui.teardown ? tui.teardown() : tui.unmount(); } catch {}
 
