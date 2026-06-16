@@ -153,6 +153,9 @@ export function createStore() {
     appendFlowDelta(label, text) {
       const s = state.sessions[label]; if (!s) return;
       s.isStreaming = true;
+      s.assistantText += text;
+      const nl = s.assistantText.lastIndexOf("\n");
+      s.lastLine = nl === -1 ? s.assistantText : s.assistantText.slice(nl + 1);
       const last = s.entries[s.entries.length - 1];
       if (last && last.type === "assistant") last.text += text;
       else s.entries.push({ type: "assistant", text });

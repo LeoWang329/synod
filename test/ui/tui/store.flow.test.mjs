@@ -25,6 +25,8 @@ test("appendFlowDelta 追加到末条 assistant(打字机式),缺卡则 no-op", 
   assert.strictEqual(ent.length, 1);
   assert.strictEqual(ent[0].type, "assistant");
   assert.strictEqual(ent[0].text, "hello");
+  assert.strictEqual(store.getState().sessions[L].assistantText, "hello");
+  assert.strictEqual(store.getState().sessions[L].lastLine, "hello");
 });
 
 test("setFlowQuestion 置 pendingQuestion+awaiting+approve 条;firstAwaiting 选中它", () => {
@@ -66,4 +68,25 @@ test("appendFlowOutput 追加 output 条(approve 正文/diff 可见)", () => {
   store.attachFlowAgent(L, { flowId: "f1", agent: "planner", model: null });
   store.appendFlowOutput(L, "diff --git ...");
   assert.ok(store.getState().sessions[L].entries.some((e) => e.type === "output" && /diff/.test(e.text)));
+});
+
+test("setFlowAgentStatus 置状态;done/failed 清 isStreaming", () => {
+  const store = createStore();
+  store.attachFlowAgent(L, { flowId: "f1", agent: "planner", model: null });
+  store.setFlowAgentStatus(L, "done");
+  let s = store.getState().sessions[L];
+  assert.strictEqual(s.status, "done");
+  assert.strictEqual(s.isStreaming, false);
+  store.setFlowAgentStatus(L, "failed");
+  s = store.getState().sessions[L];
+  assert.strictEqual(s.status, "failed");
+  assert.strictEqual(s.isStreaming, false);
+});
+
+test("endFlow ok:false → failed + summary 进系统消息", () => {
+  const store = createStore();
+  store.attachFlowAgent(L, { flowId: "f1", agent: "planner", model: null });
+  store.endFlow("f1", { ok: false, summary: "boom" });
+  assert.strictEqual(store.getState().sessions[L].status, "failed");
+  assert.ok(store.getState().system.includes("boom"));
 });
