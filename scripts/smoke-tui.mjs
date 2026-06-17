@@ -155,34 +155,66 @@ async function main() {
   await sleep(50);
   ok("Ctrl-G → onSelect(omp#2)(跳到待你,不再展开 C)", selects.at(-1) === "omp#2");
 
-  // 8) flow 群聊视图:假 flowMain 多 agent → 一张 ⑂demo 群聊卡 + 一次 io.question,经真 store/render 走通。
+  // 8) flow 群聊视图:假 flowMain 模拟真引擎形状(agent 恒 "omp"、靠 model 区分)→ 一张 ⑂qa 群聊卡,
+  //    每次 agent() 调用各成一段(按 start/turn 分段,非按后端名)。
   const { createFlowTui } = await import("../src/ui/tui/flow-tui.mjs");
+  const MIMO = "xiaomi/mimo-v2.5-pro", MINIMAX = "minimax/MiniMax-M3";
   let _ans = null;
   const fakeFlowMain = async ({ progress, io }) => {
-    progress.emit({ type: "opening", agent: "planner", model: "m" });
-    progress.emit({ type: "delta", agent: "planner", model: "m", text: "分析需求…" });
-    progress.emit({ type: "start", agent: "coder", model: "m" });
-    progress.emit({ type: "delta", agent: "coder", model: "m", text: "写实现…" });
-    _ans = await io.question("接受 diff?", {});
+    progress.emit({ type: "opening", agent: "omp", model: MIMO });
+    progress.emit({ type: "start", agent: "omp", model: MIMO });
+    progress.emit({ type: "delta", agent: "omp", model: MIMO, text: "出一道题…" });
+    progress.emit({ type: "start", agent: "omp", model: MINIMAX });
+    progress.emit({ type: "delta", agent: "omp", model: MINIMAX, text: "我的回答…" });
+    progress.emit({ type: "start", agent: "omp", model: MIMO });       // mimo 评审(qa-loop 最后发言是 review,非答题者)
+    progress.emit({ type: "delta", agent: "omp", model: MIMO, text: "评审中…" });
+    _ans = await io.question("PASS?", {});
     return 0;
   };
-  const flowTui = createFlowTui({ store, openBackend: () => {}, workflowsRoot: ".", cwd: ".", config: {}, flowMain: fakeFlowMain, dropDelayMs: 50 });
-  const fp = flowTui.runFlow(["demo"]);
+  // 续聊用假后端会话(契约同 backend session);openBackend 返回它。
+  const liveSess = new EventEmitter();
+  liveSess.sent = [];
+  liveSess.send = (m) => { liveSess.sent.push(m); return Promise.resolve({}); };
+  liveSess.close = () => {}; liveSess.abort = () => Promise.resolve({}); liveSess.summary = () => ({ id: "live" });
+  const flowTui = createFlowTui({ store, openBackend: async () => liveSess, workflowsRoot: ".", cwd: ".", config: {}, flowMain: fakeFlowMain, defaultAgent: "omp" });
+  const fp = flowTui.runFlow(["qa"]);
   await sleep(60);
-  const flowLabel = store.getState().order.find((l) => l.startsWith("⑂demo"));
-  ok("flow:一张 ⑂demo 群聊卡(非每 agent 一张)", store.getState().order.filter((l) => l.startsWith("⑂")).length === 1 && !!flowLabel);
+  const flowLabel = store.getState().order.find((l) => l.startsWith("⑂qa"));
+  ok("flow:一张 ⑂qa 群聊卡(非每 agent 一张)", store.getState().order.filter((l) => l.startsWith("⑂")).length === 1 && !!flowLabel);
   // 聚焦该 flow 卡(真 app 经 onSelect→store.setFocus;smoke 的 onSelect 只记录,这里等价驱动)→ 焦点区渲染群聊页。
   store.setFocus(flowLabel);
   await sleep(40);
-  ok("flow:群聊页含两发言人 planner/coder + 两段文本(发言人分段)", /planner/.test(stdout.text()) && /coder/.test(stdout.text()) && stdout.text().includes("分析需求") && stdout.text().includes("写实现"));
-  ok("flow:approve 门置 awaiting + pendingQuestion.prompt", store.getState().sessions[flowLabel].pendingQuestion && store.getState().sessions[flowLabel].pendingQuestion.prompt === "接受 diff?");
+  ok("flow:群聊页按 model 区分两发言人 mimo/MiniMax(非合并一段)", /mimo-v2\.5-pro/.test(stdout.text()) && /MiniMax-M3/.test(stdout.text()) && stdout.text().includes("出一道题") && stdout.text().includes("我的回答"));
+  ok("flow:store 层 3 个发言段(mimo/minimax/mimo,按 start/turn 分,非后端名)", store.getState().sessions[flowLabel].entries.filter((e) => e.type === "assistant").length === 3);
+  ok("flow:approve 门置 awaiting + pendingQuestion.prompt", store.getState().sessions[flowLabel].pendingQuestion && store.getState().sessions[flowLabel].pendingQuestion.prompt === "PASS?");
   ok("flow:flowStatus 报 running", flowTui.flowStatus().includes("running"));
   // 作答(直接走 flow-tui;真 app 经 dispatchWrapped→handleHumanLine,这里等价驱动)。
   flowTui.handleHumanLine(flowLabel, "y");
   await fp;
   ok("flow:作答后 resolve + pendingQuestion 清空", _ans === "y" && store.getState().sessions[flowLabel].pendingQuestion === null);
-  await sleep(80);   // 等 dropFlow(dropDelayMs=50)
-  ok("flow:结束后卡片撤除 + 结果进系统消息", !store.getState().order.includes(flowLabel) && store.getState().system.some((m) => /flow demo 结束/.test(m)));
+  await sleep(40);
+  ok("flow:结束后卡片保留(不自动撤)+ 记最后发言 turn 身份(mimo review)+ 结果进系统消息",
+    store.getState().order.includes(flowLabel)
+    && store.getState().sessions[flowLabel].status === "done"
+    && store.getState().sessions[flowLabel].lastModel === MIMO
+    && store.getState().sessions[flowLabel].lastAgent === "omp"
+    && store.getState().system.some((m) => /flow qa 结束/.test(m)));
+
+  // 8b) 原地续聊:在结束的 flow 卡里发消息 → 卡内接管会话,回复续写进同一张卡(不蹦新卡)。
+  const beforeOrder = store.getState().order.length;
+  await flowTui.continueInPlace(flowLabel, "再出一题");
+  await sleep(30);
+  ok("续聊:用户输入回显进同一张 flow 卡,不新增卡",
+    store.getState().order.length === beforeOrder
+    && store.getState().sessions[flowLabel].entries.some((e) => e.type === "user" && e.text === "再出一题"));
+  ok("续聊:首轮喂带 transcript 的 seed", liveSess.sent.length === 1 && /再出一题/.test(liveSess.sent[0]) && /出一道题/.test(liveSess.sent[0]));
+  liveSess.emit("status", { status: "running", isStreaming: true });
+  liveSess.emit("delta", "续聊的新题目");
+  liveSess.emit("status", { status: "idle", isStreaming: false });
+  await sleep(30);
+  ok("续聊:会话回复续写进同一张卡(不蹦新卡)",
+    store.getState().order.length === beforeOrder
+    && store.getState().sessions[flowLabel].entries.some((e) => e.type === "assistant" && /续聊的新题目/.test(e.text)));
 
   try { tui.teardown ? tui.teardown() : tui.unmount(); } catch {}
 

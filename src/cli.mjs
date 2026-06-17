@@ -430,7 +430,7 @@ async function main({
 
     const store = createStore();
     const { createFlowTui } = await import("./ui/tui/flow-tui.mjs");
-    const flowTui = createFlowTui({ store, openBackend, workflowsRoot: flowsRootTui, cwd, config, env });
+    const flowTui = createFlowTui({ store, openBackend, workflowsRoot: flowsRootTui, cwd, config, env, defaultAgent: args.agent, mesh });
     const cap = makeCaptureStream((line) => store.pushSystem(line));
 
     let smTui, composed;
@@ -492,12 +492,23 @@ async function main({
     };
     const dispatchWrapped = (line, opts) => {
       const source = opts?.source ?? "human";   // default human; don't miss echo when opts omitted
-      // flow 卡聚焦时:只读寻址——纯文本 human 行交给 flow-tui(有待答→作答 / 无待答→系统消息),
-      // 不进普通 dispatch。斜杠/@/$ 命令(含 /flow、/resume)仍走 dispatchTui。
+      // /close 落到 flow 卡:flow 卡不在 smTui,普通 /close 走不通 → 关掉续聊会话(若有)+ dropFlow。
+      if (source === "human" && /^\/close(\s|$)/.test(line)) {
+        const arg = line.slice(6).trim();
+        const tl = arg || store.getState().focusLabel;
+        const ts = tl ? store.getState().sessions[tl] : null;
+        if (ts && ts.kind === "flow") { try { flowTui.closeLive(ts.flowId); } catch { /* */ } store.dropFlow(ts.flowId); syncFocus(); return { redraw: true }; }
+      }
+      // flow 卡聚焦 + 纯文本 human 行:待答→作答 / 已结束或续聊中→原地续聊(回复续写进同一张卡,不蹦新卡)/
+      // flow 原始运行中无待答→拒绝。斜杠/@/$ 命令(含 /flow、/resume)仍走 dispatchTui。
       if (source === "human" && !/^[/@$]/.test(line)) {
         const fl = store.getState().focusLabel;
         const fs = fl ? store.getState().sessions[fl] : null;
-        if (fs && fs.kind === "flow" && flowTui.handleHumanLine(fl, line)) { syncFocus(); return { redraw: true }; }
+        if (fs && fs.kind === "flow") {
+          if (fs.pendingQuestion != null) { flowTui.handleHumanLine(fl, line); syncFocus(); return { redraw: true }; }
+          if (fs._live || fs.status === "done" || fs.status === "failed") { flowTui.continueInPlace(fl, line); syncFocus(); return { redraw: true }; }
+          flowTui.handleHumanLine(fl, line); syncFocus(); return { redraw: true };
+        }
       }
       const label = smTui.currentLabel;          // capture target label BEFORE dispatch (currentLabel may change during)
       const r = dispatchTui(line, opts);
@@ -544,6 +555,7 @@ async function main({
     };
     tui = await startTui({ store, dispatch: dispatchWrapped, hintsCtx, mesh, onSelect, onCycle, onInterrupt, stdin, stdout });
     await tui.waitUntilExit();
+    try { flowTui.closeAllLive(); } catch { /* */ }   // 关掉续聊会话(flow 卡内接管的真后端)
     await drainAndClose({ sm: smTui, registry, drainControl, controlActivity });
     return 0;
   }
