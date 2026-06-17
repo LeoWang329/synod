@@ -155,6 +155,29 @@ async function main() {
   await sleep(50);
   ok("Ctrl-G → onSelect(omp#2)(跳到待你,不再展开 C)", selects.at(-1) === "omp#2");
 
+  // 8) flow-in-TUI:假 flowMain 驱动 progress sink + 一次 io.question,经真 store/render 走通。
+  const { createFlowTui } = await import("../src/ui/tui/flow-tui.mjs");
+  let _ans = null;
+  const fakeFlowMain = async ({ progress, io }) => {
+    progress.emit({ type: "opening", agent: "planner", model: "m" });
+    progress.emit({ type: "delta", agent: "planner", model: "m", text: "分析需求…" });
+    _ans = await io.question("接受 diff?", {});
+    return 0;
+  };
+  const flowTui = createFlowTui({ store, openBackend: () => {}, workflowsRoot: ".", cwd: ".", config: {}, flowMain: fakeFlowMain, dropDelayMs: 50 });
+  const fp = flowTui.runFlow(["demo"]);
+  await sleep(60);
+  ok("flow:⑂planner 卡冒出且流式(rail 显示名 + lastLine)", /⑂planner/.test(stdout.text()) && stdout.text().includes("分析需求"));
+  const flowLabel = store.getState().order.find((l) => l.startsWith("⑂planner"));
+  ok("flow:approve 门置 awaiting + pendingQuestion", store.getState().sessions[flowLabel].pendingQuestion === "接受 diff?");
+  ok("flow:flowStatus 报 running", flowTui.flowStatus().includes("running"));
+  // 作答(直接走 flow-tui;真 app 经 dispatchWrapped→handleHumanLine,这里等价驱动)。
+  flowTui.handleHumanLine(flowLabel, "y");
+  await fp;
+  ok("flow:作答后 resolve + pendingQuestion 清空", _ans === "y" && store.getState().sessions[flowLabel].pendingQuestion === null);
+  await sleep(80);   // 等 dropFlow(dropDelayMs=50)
+  ok("flow:结束后卡片撤除 + 结果进系统消息", !store.getState().order.includes(flowLabel) && store.getState().system.some((m) => /flow demo 结束/.test(m)));
+
   try { tui.teardown ? tui.teardown() : tui.unmount(); } catch {}
 
   const failed = checks.filter(([, c]) => !c);
