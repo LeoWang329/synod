@@ -123,3 +123,12 @@ test("handleHumanLine:flow 会话无待答 → 拒绝(系统消息),不处理给
   assert.strictEqual(ft.handleHumanLine("⑂x#f9", "hi"), true);
   assert.ok(store.getState().system.length > before);
 });
+
+test("io.stdout.write 无对应卡(如 /flow --list)→ 落系统消息,不静默丢", async () => {
+  const flowMain = async ({ io }) => { io.stdout.write("flow-a: 描述\nflow-b: 描述\n"); return 0; };
+  const { store, ft } = mk(flowMain);
+  await ft.runFlow(["--list"]);
+  const sys = store.getState().system;
+  assert.ok(sys.some((m) => /flow-a: 描述/.test(m)), "应有 flow-a 行");
+  assert.ok(sys.some((m) => /flow-b: 描述/.test(m)), "应有 flow-b 行");
+});

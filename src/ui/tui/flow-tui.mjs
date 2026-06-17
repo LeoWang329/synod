@@ -37,7 +37,12 @@ export function createFlowTui({ store, openBackend, workflowsRoot, cwd, config, 
 
   function makeIo(flowId, sink, flowName) {
     const targetLabel = () => (sink.last()?.label) || keyOf(flowId, flowName, null);
-    const cap = (s) => { const l = targetLabel(); store.appendFlowOutput(l, String(s)); return true; };   // write 返回 true = 无背压
+    const cap = (s) => {   // write 返回 true = 无背压
+      const l = targetLabel();
+      if (store.getState().sessions[l]) store.appendFlowOutput(l, String(s));
+      else for (const ln of String(s).split("\n")) if (ln.trim()) store.pushSystem(ln);   // 无对应卡(如 /flow --list):落系统消息,别静默丢
+      return true;
+    };
     return {
       stdout: { write: cap }, stderr: { write: cap }, stdin: {},
       question(prompt, { signal } = {}) {
