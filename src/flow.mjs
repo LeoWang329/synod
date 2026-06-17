@@ -344,8 +344,11 @@ export async function main({
 
   // ── Progress sink ───────────────────────────────────────────────────
   const progressEnabled = args.progress || process.env.SYNOD_PROGRESS === "1";
-  const baseSink = progressEnabled ? createDefaultProgressSink(stdout) : undefined;
-  const view = progressEnabled ? createFlowView({ stdout, name: args.name, clock: () => Date.now(), env }) : null;
+  // 注入 progress sink 时(TUI):注入即取代 stdout 文本 reporter,不另建 FlowView(否则
+  // banner/result 会再往 stdout=capSink 写,在全屏 TUI 里成噪声)。
+  const useStdoutReporter = progressEnabled && !injectedProgress;
+  const baseSink = useStdoutReporter ? createDefaultProgressSink(stdout) : undefined;
+  const view = useStdoutReporter ? createFlowView({ stdout, name: args.name, clock: () => Date.now(), env }) : null;
   const progressSink = injectedProgress ?? (view ? view.countingSink(baseSink) : baseSink);
 
   // per-run 目录由 logger 的 ensureRunDir 负责;不再在 cwd 建 artifacts。

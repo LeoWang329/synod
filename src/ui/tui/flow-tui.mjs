@@ -7,6 +7,15 @@ import { prepareResume } from "../../flow/replay.mjs";
 
 const DROP_DELAY_MS = 3000;
 const shortAgent = (label) => label.replace(/^⑂/, "").replace(/#.*$/, "").replace(/:.*$/, "");
+// argv 可能带前置 flag(repl-dispatch 给 TUI 的是 ["--progress", name] 或 ["--progress","--",name,input])。
+// 取第一个非 flag(或 "--" 之后)的 token 作 flow 名——用于结束摘要与 fallback 卡 label,避免取到 "--progress"。
+const flowNameOf = (argv) => {
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--") return argv[i + 1] ?? null;
+    if (!argv[i].startsWith("-")) return argv[i];
+  }
+  return null;
+};
 
 export function createFlowTui({ store, openBackend, workflowsRoot, cwd, config, env = process.env, flowMain = realFlowMain, dropDelayMs = DROP_DELAY_MS }) {
   let _seq = 0;
@@ -63,7 +72,7 @@ export function createFlowTui({ store, openBackend, workflowsRoot, cwd, config, 
 
   function start(argv, extra = {}) {
     const flowId = `f${++_seq}`;
-    const flowName = argv[0] || flowId;
+    const flowName = flowNameOf(argv) || flowId;
     const ctrl = new AbortController();
     const sink = makeSink(flowId);
     const io = makeIo(flowId, sink, flowName);
