@@ -88,3 +88,17 @@ dropFlow(flowId)                               // 不变(按 flowId)
 - **并行 agent 同时提问**:`pending` 按 flow label 存,一 flow 同刻仅一待答(flow 引擎多为顺序提问)。并行提问罕见,留作后续。
 - **聚焦带待答的 flow 卡**:`setFocus` 会把 `awaiting→idle`(沿用"焦点 session 永不 awaiting"),但 `pendingQuestion` 仍在并驱动 `approve ❯` 与群聊里的 approve 块——状态点变化是既有语义,不在本次范围。
 - **跨发言人流式交错**:并行 agent 的 delta 会按事件顺序交错成多段——v1 接受。
+
+## 修订(2026-06-17,真 TTY 实测后根因修正)
+
+真终端实测发现"各 agent 没区分、全挤一段"。根因:**进度事件的 `agent` 字段是后端名**(`src/flow/api/agent.mjs`),真实 flow(`workflows/qa-loop.mjs`)各步全是 `"omp"`,靠 `model` 区分(mimo/minimax);原设计把 `agent` 当发言人、按 `last.agent===agent` 合并 → 同后端的多步全合一段。**经 agent-bridge codex 两轮对抗复核**(确认根因 + 复核修法,后者结论"通过")。修正后的模型取代上文"数据模型/store API"里以 `agent` 为发言人键的写法:
+
+- **发言人边界 = 每次 `agent()` 调用**(`start` 事件每个 send 必发;首次非复用还先发 `opening`,`opening` 只登记花名册不建 turn)。
+- **发言人标签 = `model` 短名**(`prov/name` → `name`)fallback 后端名。
+- **turn 状态在 `flow-tui` 维护**(非 store 全局):`turnSeq`(每 `start` +1)、`turnBySource`(`agent+model` → `{turn,speaker}`)、`lastTurn`。store 变哑层:`appendFlowDelta(label, turn, speaker, text)` / `appendFlowOutput(label, turn, speaker, text)` / `setFlowQuestion(label, turn, speaker, prompt)`,按 `last.turn===turn` 合并、否则另起段;新 turn 重置 `assistantText/lastLine`。
+- **FocusPane 按 `turn` 分段**(`e.turn !== prevTurn` 插发言人头)——故同 model 连续两次调用也各成一段。
+- **并发提问 guard**:`io.question` 在 `pending.has(label)` 时 reject 第二问,不静默覆盖第一问。
+- **并发口径**:不同 model 按 sourceKey 各归各(不串台,可能分块);同 model(同 sourceKey)退化为最新 turn 一块(无 call-id,不保证按调用分段);串行 flow 无此问题。
+- **已知限制(不在本次)**:`/resume` 重放命中直接 return 不发 progress,故 resume 只显示恢复后新段、不重建历史群聊;想要真正的"角色名"(出题/回答/评审)需给 `agent()` 加显式 `label`,而非过载 model。
+
+门禁:TUI 117、flow+cli 55、smoke 21 全绿。
