@@ -90,3 +90,12 @@ test("endFlow ok:false → failed + summary 进系统消息", () => {
   assert.strictEqual(store.getState().sessions[L].status, "failed");
   assert.ok(store.getState().system.includes("boom"));
 });
+
+test("setFlowQuestion:非焦点 flow 卡 → 焦点会话流冒确认 nudge(^G 去看)", () => {
+  const store = createStore();
+  store.attachSession("real#1", { on() {} }, "omp", {});               // 焦点 = real#1
+  store.attachFlowAgent("⑂p#f1", { flowId: "f1", agent: "p", model: null });   // 非焦点
+  store.setFlowQuestion("⑂p#f1", "接受?");
+  const fe = store.getState().sessions["real#1"].entries;
+  assert.ok(fe.some((e) => e.type === "nudge" && /要你确认/.test(e.text)), "焦点流应有确认 nudge");
+});

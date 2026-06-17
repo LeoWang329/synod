@@ -172,7 +172,9 @@ export function createStore() {
     setFlowQuestion(label, prompt) {
       const s = state.sessions[label]; if (!s) return;
       s.pendingQuestion = prompt; s.status = "awaiting";
-      s.entries.push({ type: "approve", text: prompt }); trimEntries(s); notify();
+      s.entries.push({ type: "approve", text: prompt }); trimEntries(s);
+      pushNudgeToFocus(label, "要你确认");   // 非焦点时,焦点流冒「… 要你确认 · ^G 去看」(A 通道)
+      notify();
     },
     resolveFlowQuestion(label) {
       const s = state.sessions[label]; if (!s) return;
