@@ -10,31 +10,38 @@ function mk(flowMain) {
   return { store, ft };
 }
 
-test("runFlow:progress 事件投影成 flow 卡 + 流式;结束后 endFlow", async () => {
-  let captured;
-  const flowMain = async ({ progress }) => { captured = progress; progress.emit({ type: "opening", agent: "planner", model: "m" }); progress.emit({ type: "delta", agent: "planner", model: "m", text: "hi" }); return 0; };
-  const { store, ft } = mk(flowMain);
-  await ft.runFlow(["demo"]);
-  const labels = store.getState().order;
-  const fl = labels.find((l) => l.startsWith("⑂planner"));
-  assert.ok(fl, "应有 ⑂planner 卡");
-  assert.strictEqual(store.getState().sessions[fl].entries.find((e) => e.type === "assistant").text, "hi");
-  assert.strictEqual(store.getState().sessions[fl].status, "done");
-});
-
-test("io.question:置 awaiting,answer() 即 resolve 引擎 Promise", async () => {
-  let resolved = null;
-  const flowMain = async ({ progress, io }) => {
-    progress.emit({ type: "start", agent: "review", model: null });
-    const ans = await io.question("接受?", {});
-    resolved = ans;
+test("runFlow:多 agent 投影到一张 ⑂<flowName> 卡,条目按发言人归属;结束 done", async () => {
+  const flowMain = async ({ progress }) => {
+    progress.emit({ type: "opening", agent: "planner", model: "m" });
+    progress.emit({ type: "delta", agent: "planner", model: "m", text: "拆解" });
+    progress.emit({ type: "start", agent: "coder", model: "m" });
+    progress.emit({ type: "delta", agent: "coder", model: "m", text: "写码" });
     return 0;
   };
   const { store, ft } = mk(flowMain);
-  const p = ft.runFlow(["demo"]);
-  await new Promise((r) => setTimeout(r, 10));   // 让 flowMain 跑到 question
-  const fl = store.getState().order.find((l) => l.startsWith("⑂review"));
-  assert.strictEqual(store.getState().sessions[fl].pendingQuestion, "接受?");
+  await ft.runFlow(["研发流"]);
+  const labels = store.getState().order;
+  const fl = labels.find((l) => l.startsWith("⑂研发流"));
+  assert.ok(fl, "应有 ⑂研发流 卡");
+  assert.strictEqual(labels.filter((l) => l.startsWith("⑂")).length, 1, "只有一张 flow 卡(非每 agent 一张)");
+  const s = store.getState().sessions[fl];
+  assert.deepStrictEqual(s.agents, ["planner", "coder"]);
+  assert.deepStrictEqual(s.entries.map((e) => [e.agent, e.text]), [["planner", "拆解"], ["coder", "写码"]]);
+  assert.strictEqual(s.status, "done");
+});
+
+test("io.question:置 awaiting,pendingQuestion={agent,prompt};answer() resolve 引擎", async () => {
+  let resolved = null;
+  const flowMain = async ({ progress, io }) => {
+    progress.emit({ type: "start", agent: "review", model: null });
+    resolved = await io.question("接受?", {});
+    return 0;
+  };
+  const { store, ft } = mk(flowMain);
+  const p = ft.runFlow(["研发流"]);
+  await new Promise((r) => setTimeout(r, 10));
+  const fl = store.getState().order.find((l) => l.startsWith("⑂研发流"));
+  assert.deepStrictEqual(store.getState().sessions[fl].pendingQuestion, { agent: "review", prompt: "接受?" });
   assert.strictEqual(store.getState().sessions[fl].status, "awaiting");
   assert.strictEqual(ft.answer(fl, "y"), true);
   await p;
@@ -49,8 +56,8 @@ test("abortAll:拒绝待答问题,引擎据 signal 收口", async () => {
     try { await io.question("接受?", { signal }); } catch { rejected = true; }
     return 1;
   };
-  const { store, ft } = mk(flowMain);
-  const p = ft.runFlow(["demo"]);
+  const { ft } = mk(flowMain);
+  const p = ft.runFlow(["研发流"]);
   await new Promise((r) => setTimeout(r, 10));
   ft.abortAll();
   await p;
@@ -62,26 +69,26 @@ test("flowStatus:运行中计数,空闲 none", async () => {
   const gate = new Promise((r) => { release = r; });
   const flowMain = async () => { await gate; return 0; };
   const { ft } = mk(flowMain);
-  const p = ft.runFlow(["demo"]);
+  const p = ft.runFlow(["研发流"]);
   await new Promise((r) => setTimeout(r, 5));
   assert.match(ft.flowStatus(), /running/);
   release(); await p;
   assert.strictEqual(ft.flowStatus(), "none");
 });
 
-test("io.stdout.write 投影成 output 条目", async () => {
+test("io.stdout.write 投影成带发言人的 output 条", async () => {
   const flowMain = async ({ progress, io }) => {
     progress.emit({ type: "start", agent: "planner", model: "m" });
     io.stdout.write("行内输出");
     return 0;
   };
   const { store, ft } = mk(flowMain);
-  await ft.runFlow(["demo"]);
-  const fl = store.getState().order.find((l) => l.startsWith("⑂planner"));
-  assert.ok(store.getState().sessions[fl].entries.some((e) => e.type === "output" && e.text === "行内输出"));
+  await ft.runFlow(["研发流"]);
+  const fl = store.getState().order.find((l) => l.startsWith("⑂研发流"));
+  assert.ok(store.getState().sessions[fl].entries.some((e) => e.type === "output" && e.agent === "planner" && e.text === "行内输出"));
 });
 
-test("answer 后移除 abort 监听器(不泄漏)", async () => {
+test("answer 后移除 abort 监听器(同一 flow 顺序两问不泄漏)", async () => {
   let sig;
   const flowMain = async ({ progress, io, signal }) => {
     sig = signal;
@@ -91,40 +98,38 @@ test("answer 后移除 abort 监听器(不泄漏)", async () => {
     return 0;
   };
   const { store, ft } = mk(flowMain);
-  const p = ft.runFlow(["demo"]);
+  const p = ft.runFlow(["研发流"]);
   await new Promise((r) => setTimeout(r, 10));
-  let fl = store.getState().order.find((l) => l.startsWith("⑂review"));
+  let fl = store.getState().order.find((l) => l.startsWith("⑂研发流"));
   ft.answer(fl, "a1");
   await new Promise((r) => setTimeout(r, 10));
-  fl = store.getState().order.find((l) => l.startsWith("⑂review"));
+  fl = store.getState().order.find((l) => l.startsWith("⑂研发流"));
   ft.answer(fl, "a2");
   await p;
-  assert.strictEqual(getEventListeners(sig, "abort").length, 0, "answered questions 不应残留 abort 监听器");
+  assert.strictEqual(getEventListeners(sig, "abort").length, 0, "answered 不应残留 abort 监听器");
 });
 
-test("handleHumanLine:flow 会话有待答 → 作答并吞掉;无待答 → 系统消息拒绝;非 flow → 不处理", async () => {
+test("handleHumanLine:有待答→作答并吞掉;非 flow→不处理", async () => {
   const flowMain = async ({ progress, io }) => { progress.emit({ type: "start", agent: "review", model: null }); await io.question("?", {}); return 0; };
   const { store, ft } = mk(flowMain);
-  const p = ft.runFlow(["demo"]);
+  const p = ft.runFlow(["研发流"]);
   await new Promise((r) => setTimeout(r, 10));
-  const fl = store.getState().order.find((l) => l.startsWith("⑂review"));
-  // 有待答 → 作答
+  const fl = store.getState().order.find((l) => l.startsWith("⑂研发流"));
   assert.strictEqual(ft.handleHumanLine(fl, "y"), true);
   assert.strictEqual(store.getState().sessions[fl].pendingQuestion, null);
   await p;
-  // 非 flow 会话(不存在)→ 不处理
   assert.strictEqual(ft.handleHumanLine("omp#1", "hi"), false);
 });
 
-test("handleHumanLine:flow 会话无待答 → 拒绝(系统消息),不处理给后端", () => {
+test("handleHumanLine:flow 会话无待答 → 拒绝(系统消息)", () => {
   const { store, ft } = mk(async () => 0);
-  store.attachFlowAgent("⑂x#f9", { flowId: "f9", agent: "x", model: null });
+  store.attachFlow("⑂x#f9", { flowId: "f9", flowName: "x" });
   const before = store.getState().system.length;
   assert.strictEqual(ft.handleHumanLine("⑂x#f9", "hi"), true);
   assert.ok(store.getState().system.length > before);
 });
 
-test("io.stdout.write 无对应卡(如 /flow --list)→ 落系统消息,不静默丢", async () => {
+test("io.stdout.write 无对应卡(/flow --list)→ 落系统消息,不静默丢", async () => {
   const flowMain = async ({ io }) => { io.stdout.write("flow-a: 描述\nflow-b: 描述\n"); return 0; };
   const { store, ft } = mk(flowMain);
   await ft.runFlow(["--list"]);
@@ -133,7 +138,7 @@ test("io.stdout.write 无对应卡(如 /flow --list)→ 落系统消息,不静�
   assert.ok(sys.some((m) => /flow-b: 描述/.test(m)), "应有 flow-b 行");
 });
 
-test("flowName 从 argv 跳过前置 flag(repl-dispatch 的 --progress/-- 不当成名字)", async () => {
+test("flowName 从 argv 跳过前置 flag(--progress/-- 不当成名字)", async () => {
   const { store, ft } = mk(async () => 0);
   await ft.runFlow(["--progress", "myflow"]);
   await ft.runFlow(["--progress", "--", "other", "{\"x\":1}"]);

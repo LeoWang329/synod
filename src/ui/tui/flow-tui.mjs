@@ -1,4 +1,4 @@
-// src/ui/tui/flow-tui.mjs — 把 flow 引擎运行投影进 TUI store(只读会话卡 + approve 经输入框作答)。
+// src/ui/tui/flow-tui.mjs — 把 flow 引擎运行投影进 TUI store(一个 flow = 一张群聊卡 + approve 经输入框作答)。
 // 不碰真 stdout(全屏 alt-screen):flow 的 progress/io/signal 三个注入接缝在此装配。
 import { main as realFlowMain } from "../../flow.mjs";
 import path from "node:path";
@@ -6,9 +6,8 @@ import os from "node:os";
 import { prepareResume } from "../../flow/replay.mjs";
 
 const DROP_DELAY_MS = 3000;
-const shortAgent = (label) => label.replace(/^⑂/, "").replace(/#.*$/, "").replace(/:.*$/, "");
 // argv 可能带前置 flag(repl-dispatch 给 TUI 的是 ["--progress", name] 或 ["--progress","--",name,input])。
-// 取第一个非 flag(或 "--" 之后)的 token 作 flow 名——用于结束摘要与 fallback 卡 label,避免取到 "--progress"。
+// 取第一个非 flag(或 "--" 之后)的 token 作 flow 名——用于卡 label/结束摘要,避免取到 "--progress"。
 const flowNameOf = (argv) => {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--") return argv[i + 1] ?? null;
@@ -20,44 +19,39 @@ const flowNameOf = (argv) => {
 export function createFlowTui({ store, openBackend, workflowsRoot, cwd, config, env = process.env, flowMain = realFlowMain, dropDelayMs = DROP_DELAY_MS }) {
   let _seq = 0;
   const activeFlows = new Map();   // flowId → { ctrl }
-  const pending = new Map();       // label → { resolve, reject, flowId, signal, onAbort }
+  const pending = new Map();       // flow label → { resolve, reject, flowId, signal, onAbort }
 
-  const keyOf = (flowId, agent, model) => `⑂${agent}${model ? ":" + model : ""}#${flowId}`;
+  const flowLabelOf = (flowId, flowName) => `⑂${flowName}#${flowId}`;
 
-  function makeSink(flowId) {
-    let last = null;   // { label, agent, model }
+  function makeSink(flowId, flowName) {
+    const label = flowLabelOf(flowId, flowName);
+    let lastAgent = null;   // 当前发言人 = 最近事件的 agent(io.question/output 归属据此)
     return {
-      last: () => last,
+      last: () => ({ label, agent: lastAgent }),
       emit(ev) {
         if (!ev) return;
-        const agent = ev.agent ?? String(flowId);
-        const label = keyOf(flowId, agent, ev.model);
-        last = { label, agent, model: ev.model ?? null };
-        if (ev.type === "opening" || ev.type === "start") {
-          store.attachFlowAgent(label, { flowId, agent, model: ev.model ?? null });
-        } else if (ev.type === "delta" && ev.text) {
-          if (!store.getState().sessions[label])
-            store.attachFlowAgent(label, { flowId, agent, model: ev.model ?? null });
-          store.appendFlowDelta(label, ev.text);
-        }
+        const agent = ev.agent ?? flowName;
+        lastAgent = agent;
+        if (!store.getState().sessions[label]) store.attachFlow(label, { flowId, flowName });
+        if (ev.type === "delta" && ev.text) store.appendFlowDelta(label, agent, ev.text);
+        else if (ev.type === "opening" || ev.type === "start") store.noteFlowAgent(label, agent);
       },
     };
   }
 
   function makeIo(flowId, sink, flowName) {
-    const targetLabel = () => (sink.last()?.label) || keyOf(flowId, flowName, null);
+    const label = flowLabelOf(flowId, flowName);
+    const speaker = () => sink.last()?.agent ?? flowName;
     const cap = (s) => {   // write 返回 true = 无背压
-      const l = targetLabel();
-      if (store.getState().sessions[l]) store.appendFlowOutput(l, String(s));
-      else for (const ln of String(s).split("\n")) if (ln.trim()) store.pushSystem(ln);   // 无对应卡(如 /flow --list):落系统消息,别静默丢
+      if (store.getState().sessions[label]) store.appendFlowOutput(label, speaker(), String(s));
+      else for (const ln of String(s).split("\n")) if (ln.trim()) store.pushSystem(ln);   // 无卡(如 /flow --list):落系统消息,别静默丢
       return true;
     };
     return {
       stdout: { write: cap }, stderr: { write: cap }, stdin: {},
       question(prompt, { signal } = {}) {
-        const label = targetLabel();
-        store.attachFlowAgent(label, { flowId, agent: shortAgent(label), model: null });
-        store.setFlowQuestion(label, prompt);
+        if (!store.getState().sessions[label]) store.attachFlow(label, { flowId, flowName });
+        store.setFlowQuestion(label, speaker(), prompt);
         return new Promise((resolve, reject) => {
           const onAbort = () => { if (pending.delete(label)) reject(new Error("flow aborted")); };
           pending.set(label, { resolve, reject, flowId, signal, onAbort });
@@ -74,7 +68,7 @@ export function createFlowTui({ store, openBackend, workflowsRoot, cwd, config, 
     const flowId = `f${++_seq}`;
     const flowName = flowNameOf(argv) || flowId;
     const ctrl = new AbortController();
-    const sink = makeSink(flowId);
+    const sink = makeSink(flowId, flowName);
     const io = makeIo(flowId, sink, flowName);
     activeFlows.set(flowId, { ctrl });
     const p = Promise.resolve()
@@ -87,7 +81,7 @@ export function createFlowTui({ store, openBackend, workflowsRoot, cwd, config, 
       .catch((err) => { store.endFlow(flowId, { ok: false, summary: `flow ${flowName} 出错: ${err?.message ?? err}` }); return 1; })
       .finally(() => {
         activeFlows.delete(flowId);
-        for (const [label, pr] of [...pending]) if (pr.flowId === flowId) { pending.delete(label); pr.signal?.removeEventListener("abort", pr.onAbort); pr.reject(new Error("flow ended")); }
+        for (const [lbl, pr] of [...pending]) if (pr.flowId === flowId) { pending.delete(lbl); pr.signal?.removeEventListener("abort", pr.onAbort); pr.reject(new Error("flow ended")); }
         setTimeout(() => store.dropFlow(flowId), dropDelayMs).unref?.();
       });
     return p;
