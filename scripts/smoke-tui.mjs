@@ -155,21 +155,27 @@ async function main() {
   await sleep(50);
   ok("Ctrl-G → onSelect(omp#2)(跳到待你,不再展开 C)", selects.at(-1) === "omp#2");
 
-  // 8) flow-in-TUI:假 flowMain 驱动 progress sink + 一次 io.question,经真 store/render 走通。
+  // 8) flow 群聊视图:假 flowMain 多 agent → 一张 ⑂demo 群聊卡 + 一次 io.question,经真 store/render 走通。
   const { createFlowTui } = await import("../src/ui/tui/flow-tui.mjs");
   let _ans = null;
   const fakeFlowMain = async ({ progress, io }) => {
     progress.emit({ type: "opening", agent: "planner", model: "m" });
     progress.emit({ type: "delta", agent: "planner", model: "m", text: "分析需求…" });
+    progress.emit({ type: "start", agent: "coder", model: "m" });
+    progress.emit({ type: "delta", agent: "coder", model: "m", text: "写实现…" });
     _ans = await io.question("接受 diff?", {});
     return 0;
   };
   const flowTui = createFlowTui({ store, openBackend: () => {}, workflowsRoot: ".", cwd: ".", config: {}, flowMain: fakeFlowMain, dropDelayMs: 50 });
   const fp = flowTui.runFlow(["demo"]);
   await sleep(60);
-  ok("flow:⑂planner 卡冒出且流式(rail 显示名 + lastLine)", /⑂planner/.test(stdout.text()) && stdout.text().includes("分析需求"));
-  const flowLabel = store.getState().order.find((l) => l.startsWith("⑂planner"));
-  ok("flow:approve 门置 awaiting + pendingQuestion", store.getState().sessions[flowLabel].pendingQuestion === "接受 diff?");
+  const flowLabel = store.getState().order.find((l) => l.startsWith("⑂demo"));
+  ok("flow:一张 ⑂demo 群聊卡(非每 agent 一张)", store.getState().order.filter((l) => l.startsWith("⑂")).length === 1 && !!flowLabel);
+  // 聚焦该 flow 卡(真 app 经 onSelect→store.setFocus;smoke 的 onSelect 只记录,这里等价驱动)→ 焦点区渲染群聊页。
+  store.setFocus(flowLabel);
+  await sleep(40);
+  ok("flow:群聊页含两发言人 planner/coder + 两段文本(发言人分段)", /planner/.test(stdout.text()) && /coder/.test(stdout.text()) && stdout.text().includes("分析需求") && stdout.text().includes("写实现"));
+  ok("flow:approve 门置 awaiting + pendingQuestion.prompt", store.getState().sessions[flowLabel].pendingQuestion && store.getState().sessions[flowLabel].pendingQuestion.prompt === "接受 diff?");
   ok("flow:flowStatus 报 running", flowTui.flowStatus().includes("running"));
   // 作答(直接走 flow-tui;真 app 经 dispatchWrapped→handleHumanLine,这里等价驱动)。
   flowTui.handleHumanLine(flowLabel, "y");
