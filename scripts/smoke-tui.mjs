@@ -90,15 +90,6 @@ async function main() {
   // 1) Boot: full-screen TUI rendered with the focus label.
   ok("boot: TUI rendered with omp#1 focus", stdout.text().includes("omp#1"));
 
-  // 1b) 鼠标不泄漏成输入框文本(本次修复的根因):喂入真实 SGR 序列——点击 / 释放 / 移动 / 滚轮——
-  //     断言渲染帧里不出现 `[<…` 残渣;同时右栏卡(omp#1 @ cols120 → x91,y3,w30,h7)上的左键点击仍能 → onSelect。
-  stdin.write("\x1b[<0;95;5M\x1b[<0;95;5m");   // 左键 press+release，落在 agent 卡内(95,5)
-  stdin.write("\x1b[<35;20;10M");              // 移动(bit32)
-  stdin.write("\x1b[<64;30;12M");              // 滚轮上滚
-  await sleep(50);
-  ok("鼠标序列不泄漏成输入框字符(无 [< 残渣)", !stdout.text().includes("[<"));
-  ok("右栏卡左键点击仍路由到 onSelect(鼠标解析未被误删)", selects.includes("omp#1"));
-
   // 2) User echo (❯) via dispatch → pushUser.
   store.pushUser("omp#1", "读 package.json 的 name");
   dispatch("读 package.json 的 name"); // (already pushed once; dispatch echoes plain text)

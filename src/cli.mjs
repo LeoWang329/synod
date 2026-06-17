@@ -490,14 +490,26 @@ async function main({
     store.setFocus(smTui.currentLabel);
 
     let tui;
+    // Ctrl+C 语义:第一次=打断当前所有会话的 turn(不退出);1.5s 内连按第二次=退出。
+    // 超过窗口未连按 → 计数重置,下次按又是一次"打断"。(原实现 bug:第一次就 unmount 退出了。)
     let _interruptCount = 0;
+    let _interruptResetTimer = null;
     const onInterrupt = () => {
       _interruptCount += 1;
-      if (_interruptCount >= 2) { closeAllLiveSessionsSync(); process.exit(1); return; }
+      if (_interruptCount >= 2) {
+        if (_interruptResetTimer) clearTimeout(_interruptResetTimer);
+        try { tui.teardown?.(); } catch {}   // 还原终端(alt-screen/光标/鼠标)再硬退出
+        closeAllLiveSessionsSync();
+        process.exit(1);
+        return;
+      }
       for (const [, info] of smTui._sessions) {
         try { Promise.resolve(info.session.abort?.()).catch(() => {}); } catch {}
       }
-      try { tui.unmount(); } catch {}
+      store.pushSystem("已打断当前 turn。1.5s 内再按一次 Ctrl+C 退出。");
+      if (_interruptResetTimer) clearTimeout(_interruptResetTimer);
+      _interruptResetTimer = setTimeout(() => { _interruptCount = 0; _interruptResetTimer = null; }, 1500);
+      _interruptResetTimer.unref?.();
     };
     tui = await startTui({ store, dispatch: dispatchWrapped, hintsCtx, mesh, onSelect, onCycle, onInterrupt, stdin, stdout });
     await tui.waitUntilExit();

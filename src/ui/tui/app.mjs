@@ -9,7 +9,7 @@ import { SystemStrip } from "./components/SystemStrip.mjs";
 import { StatusBar } from "./components/StatusBar.mjs";
 import { computeHints } from "./hints.mjs";
 
-export function App({ store, dispatch, hintsCtx, mesh, onSelect, onCycle, onInterrupt }) {
+export function App({ store, dispatch, hintsCtx, mesh, onSelect, onCycle, onInterrupt, rows }) {
   const [, force] = useState(0);
   const [value, setValue] = useState("");
   const valueRef = useRef("");
@@ -25,6 +25,12 @@ export function App({ store, dispatch, hintsCtx, mesh, onSelect, onCycle, onInte
     if (key.tab) { onCycle(); return; }
     if (key.return) {
       const line = valueRef.current.trim();
+      // 选中了工具卡且输入框为空 → Enter 展开/收起选中卡(等同 Ctrl-E),不当作发送。
+      if (!line && selIdx >= 0) {
+        const st2 = store.getState();
+        const ent = st2.sessions[st2.focusLabel]?.entries || [];
+        if (ent[selIdx]?.type === "tool") { store.toggleEntry(st2.focusLabel, selIdx); return; }
+      }
       valueRef.current = "";
       setValue("");
       if (line) {
@@ -70,13 +76,18 @@ export function App({ store, dispatch, hintsCtx, mesh, onSelect, onCycle, onInte
 
   const agents = st.order.length;
   const awaiting = Object.values(st.sessions).filter((s) => s.status === "awaiting").length;
-  return html`<${Box} flexDirection="column" width="100%">
+  const fa = st.sessions[st.focusLabel];
+  const approve = !!(fa && fa.kind === "flow" && fa.pendingQuestion);
+  // 纵向布局:上半 body(焦点区 | agent 栏)flexGrow 撑满;竖线只在 body 内(rail borderLeft),
+  // 到输入框上方即止——不贯穿输入。输入框/状态栏是 column 直接子项 → 横向通栏(左到右)。
+  // height=${rows}(终端行高)→ 占满整屏,focus 区 flexGrow 把输入/状态压到最底端。
+  return html`<${Box} flexDirection="column" width="100%" height=${rows}>
     <${Box} flexGrow=${1}>
       <${FocusPane} label=${st.focusLabel} sess=${st.sessions[st.focusLabel]} selectedIndex=${selIdx} />
       <${AgentRail} sessions=${st.sessions} order=${st.order} focusLabel=${st.focusLabel} />
     <//>
     <${SystemStrip} messages=${st.system} />
-    <${InputBar} focusLabel=${st.focusLabel} value=${value} hints=${hints} />
+    <${InputBar} focusLabel=${st.focusLabel} value=${value} hints=${hints} approve=${approve} />
     <${StatusBar} agents=${agents} awaiting=${awaiting} mesh=${mesh} />
   <//>`;
 }
