@@ -21,3 +21,16 @@ test("不再渲染 relay 箭头 ▶/◀", () => {
   const f = render(html`<${AgentRail} sessions=${sessions} order=${["omp#1","codex#1","omp#2"]} focusLabel="omp#1" />`).lastFrame();
   assert.ok(!f.includes("▶")); assert.ok(!f.includes("◀"));
 });
+test("AgentRail:flow 卡显示 ⑂flowName + 'running · N agents'", () => {
+  const sessions = { "⑂研发流#f1": { kind: "flow", flowName: "研发流", status: "running", agents: ["a", "b", "c"], turn: 0, lastLine: "在干活" } };
+  const { lastFrame } = render(html`<${AgentRail} sessions=${sessions} order=${["⑂研发流#f1"]} focusLabel=${null} />`);
+  const f = lastFrame();
+  assert.match(f, /⑂研发流/);
+  assert.match(f, /running · 3 agents/);
+});
+
+test("AgentRail:flow 卡 awaiting → 待你", () => {
+  const sessions = { "⑂x#f1": { kind: "flow", flowName: "x", status: "awaiting", agents: ["a"], turn: 0, lastLine: "" } };
+  const { lastFrame } = render(html`<${AgentRail} sessions=${sessions} order=${["⑂x#f1"]} focusLabel=${"⑂x#f1"} />`);
+  assert.match(lastFrame(), /待你/);
+});
