@@ -2,90 +2,88 @@ import { test } from "node:test";
 import assert from "node:assert";
 import { createStore } from "../../../src/ui/tui/store.mjs";
 
-const L = "⑂planner#f1";
+const L = "⑂研发流#f1";
 
-test("attachFlowAgent 建只读 flow 卡,进 sessions+order,默认焦点", () => {
+test("attachFlow 建唯一只读 flow 卡(kind/flowName/默认聚焦)", () => {
   const store = createStore();
-  store.attachFlowAgent(L, { flowId: "f1", agent: "planner", model: "m" });
+  store.attachFlow(L, { flowId: "f1", flowName: "研发流" });
   const s = store.getState().sessions[L];
   assert.strictEqual(s.kind, "flow");
   assert.strictEqual(s.flowId, "f1");
-  assert.strictEqual(s.agent, "planner");
+  assert.strictEqual(s.flowName, "研发流");
   assert.strictEqual(s.status, "running");
+  assert.deepStrictEqual(s.agents, []);
   assert.ok(store.getState().order.includes(L));
   assert.strictEqual(store.getState().focusLabel, L);
 });
 
-test("appendFlowDelta 追加到末条 assistant(打字机式),缺卡则 no-op", () => {
+test("appendFlowDelta:同发言人累加一段,切换另起一段;登记花名册;缺卡 no-op", () => {
   const store = createStore();
-  store.appendFlowDelta("无此卡", "x");   // 不抛
-  store.attachFlowAgent(L, { flowId: "f1", agent: "planner", model: null });
-  store.appendFlowDelta(L, "hel"); store.appendFlowDelta(L, "lo");
+  store.appendFlowDelta("无此卡", "x", "y");   // 不抛
+  store.attachFlow(L, { flowId: "f1", flowName: "研发流" });
+  store.appendFlowDelta(L, "planner", "拆"); store.appendFlowDelta(L, "planner", "解");
+  store.appendFlowDelta(L, "coder", "写码");
   const ent = store.getState().sessions[L].entries;
-  assert.strictEqual(ent.length, 1);
-  assert.strictEqual(ent[0].type, "assistant");
-  assert.strictEqual(ent[0].text, "hello");
-  assert.strictEqual(store.getState().sessions[L].assistantText, "hello");
-  assert.strictEqual(store.getState().sessions[L].lastLine, "hello");
+  assert.strictEqual(ent.length, 2);
+  assert.deepStrictEqual([ent[0].type, ent[0].agent, ent[0].text], ["assistant", "planner", "拆解"]);
+  assert.deepStrictEqual([ent[1].type, ent[1].agent, ent[1].text], ["assistant", "coder", "写码"]);
+  assert.deepStrictEqual(store.getState().sessions[L].agents, ["planner", "coder"]);
+  assert.strictEqual(store.getState().sessions[L].lastLine, "拆解写码");
 });
 
-test("setFlowQuestion 置 pendingQuestion+awaiting+approve 条;firstAwaiting 选中它", () => {
+test("noteFlowAgent 幂等登记参与者", () => {
   const store = createStore();
-  store.attachFlowAgent(L, { flowId: "f1", agent: "planner", model: null });
-  store.setFlowQuestion(L, "接受 diff?");
+  store.attachFlow(L, { flowId: "f1", flowName: "研发流" });
+  store.noteFlowAgent(L, "planner"); store.noteFlowAgent(L, "planner"); store.noteFlowAgent(L, "review");
+  assert.deepStrictEqual(store.getState().sessions[L].agents, ["planner", "review"]);
+});
+
+test("setFlowQuestion:pendingQuestion 为 {agent,prompt}+awaiting+approve 条;firstAwaiting 命中", () => {
+  const store = createStore();
+  store.attachFlow(L, { flowId: "f1", flowName: "研发流" });
+  store.setFlowQuestion(L, "review", "接受 diff?");
   const s = store.getState().sessions[L];
-  assert.strictEqual(s.pendingQuestion, "接受 diff?");
+  assert.deepStrictEqual(s.pendingQuestion, { agent: "review", prompt: "接受 diff?" });
   assert.strictEqual(s.status, "awaiting");
-  assert.ok(s.entries.some((e) => e.type === "approve" && e.text === "接受 diff?"));
+  assert.ok(s.entries.some((e) => e.type === "approve" && e.agent === "review" && e.text === "接受 diff?"));
+  assert.ok(s.agents.includes("review"));
   assert.strictEqual(store.firstAwaiting(), L);
 });
 
 test("resolveFlowQuestion 清 pendingQuestion 回 running", () => {
   const store = createStore();
-  store.attachFlowAgent(L, { flowId: "f1", agent: "planner", model: null });
-  store.setFlowQuestion(L, "q");
+  store.attachFlow(L, { flowId: "f1", flowName: "研发流" });
+  store.setFlowQuestion(L, "review", "q");
   store.resolveFlowQuestion(L);
   const s = store.getState().sessions[L];
   assert.strictEqual(s.pendingQuestion, null);
   assert.strictEqual(s.status, "running");
 });
 
-test("endFlow 标 done/failed + 系统消息;dropFlow 撤掉该 flow 全部卡并修焦点", () => {
+test("appendFlowOutput 追加带发言人的 output 条", () => {
   const store = createStore();
-  store.attachFlowAgent("⑂a#f1", { flowId: "f1", agent: "a", model: null });
-  store.attachFlowAgent("⑂b#f1", { flowId: "f1", agent: "b", model: null });
+  store.attachFlow(L, { flowId: "f1", flowName: "研发流" });
+  store.appendFlowOutput(L, "coder", "diff --git ...");
+  const e = store.getState().sessions[L].entries.find((x) => x.type === "output");
+  assert.ok(e && e.agent === "coder" && /diff/.test(e.text));
+  assert.ok(store.getState().sessions[L].agents.includes("coder"));
+});
+
+test("endFlow 标 done + 系统消息;dropFlow 撤该 flow 卡并修焦点", () => {
+  const store = createStore();
+  store.attachFlow(L, { flowId: "f1", flowName: "研发流" });
   store.endFlow("f1", { ok: true, summary: "flow done" });
-  assert.strictEqual(store.getState().sessions["⑂a#f1"].status, "done");
+  assert.strictEqual(store.getState().sessions[L].status, "done");
   assert.ok(store.getState().system.includes("flow done"));
   store.dropFlow("f1");
-  assert.strictEqual(store.getState().sessions["⑂a#f1"], undefined);
-  assert.ok(!store.getState().order.some((l) => l.endsWith("#f1")));
+  assert.strictEqual(store.getState().sessions[L], undefined);
+  assert.ok(!store.getState().order.includes(L));
   assert.strictEqual(store.getState().focusLabel, null);
-});
-
-test("appendFlowOutput 追加 output 条(approve 正文/diff 可见)", () => {
-  const store = createStore();
-  store.attachFlowAgent(L, { flowId: "f1", agent: "planner", model: null });
-  store.appendFlowOutput(L, "diff --git ...");
-  assert.ok(store.getState().sessions[L].entries.some((e) => e.type === "output" && /diff/.test(e.text)));
-});
-
-test("setFlowAgentStatus 置状态;done/failed 清 isStreaming", () => {
-  const store = createStore();
-  store.attachFlowAgent(L, { flowId: "f1", agent: "planner", model: null });
-  store.setFlowAgentStatus(L, "done");
-  let s = store.getState().sessions[L];
-  assert.strictEqual(s.status, "done");
-  assert.strictEqual(s.isStreaming, false);
-  store.setFlowAgentStatus(L, "failed");
-  s = store.getState().sessions[L];
-  assert.strictEqual(s.status, "failed");
-  assert.strictEqual(s.isStreaming, false);
 });
 
 test("endFlow ok:false → failed + summary 进系统消息", () => {
   const store = createStore();
-  store.attachFlowAgent(L, { flowId: "f1", agent: "planner", model: null });
+  store.attachFlow(L, { flowId: "f1", flowName: "研发流" });
   store.endFlow("f1", { ok: false, summary: "boom" });
   assert.strictEqual(store.getState().sessions[L].status, "failed");
   assert.ok(store.getState().system.includes("boom"));
@@ -93,9 +91,9 @@ test("endFlow ok:false → failed + summary 进系统消息", () => {
 
 test("setFlowQuestion:非焦点 flow 卡 → 焦点会话流冒确认 nudge(^G 去看)", () => {
   const store = createStore();
-  store.attachSession("real#1", { on() {} }, "omp", {});               // 焦点 = real#1
-  store.attachFlowAgent("⑂p#f1", { flowId: "f1", agent: "p", model: null });   // 非焦点
-  store.setFlowQuestion("⑂p#f1", "接受?");
+  store.attachSession("real#1", { on() {} }, "omp", {});
+  store.attachFlow(L, { flowId: "f1", flowName: "研发流" });   // 非焦点
+  store.setFlowQuestion(L, "review", "接受?");
   const fe = store.getState().sessions["real#1"].entries;
-  assert.ok(fe.some((e) => e.type === "nudge" && /要你确认/.test(e.text)), "焦点流应有确认 nudge");
+  assert.ok(fe.some((e) => e.type === "nudge" && /要你确认/.test(e.text)));
 });

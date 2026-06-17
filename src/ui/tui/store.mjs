@@ -27,21 +27,22 @@ export function createStore() {
   }
   function trimEntries(s) { while (s.entries.length > MAX_ENTRIES) s.entries.shift(); }
 
-  // ── flow 伪会话:无真 session/适配器,由 flow-tui 的 progress/io 投影驱动 ──
-  function ensureFlow(label, { flowId, agent, model }) {
+  // ── flow 伪会话:一个 flowId 一张群聊卡,条目带发言人(agent)字段 ──
+  function ensureFlow(label, { flowId, flowName }) {
     let s = state.sessions[label];
     if (!s) {
       s = state.sessions[label] = {
-        kind: "flow", flowId, agent: agent ?? "", model: model ?? null, effort: null,
-        status: "running", isStreaming: true, turn: 0,
+        kind: "flow", flowId, flowName: flowName ?? "", agent: flowName ?? "",
+        model: null, effort: null, status: "running", isStreaming: true, turn: 0,
         assistantText: "", lastLine: "", turnStartAt: null, ms: null,
-        entries: [], _newAsst: false, pendingQuestion: null,
+        agents: [], entries: [], _newAsst: false, pendingQuestion: null,
       };
       state.order.push(label);
       if (!state.focusLabel) state.focusLabel = label;
     }
     return s;
   }
+  function noteAgent(s, agent) { if (agent && !s.agents.includes(agent)) s.agents.push(agent); }
 
   function pushNudgeToFocus(fromLabel, what) {
     const fl = state.focusLabel;
@@ -149,30 +150,30 @@ export function createStore() {
       if (state.focusLabel === label) state.focusLabel = state.order[state.order.length - 1] ?? null;
       notify();
     },
-    attachFlowAgent(label, meta) { ensureFlow(label, meta); notify(); },
-    appendFlowDelta(label, text) {
+    attachFlow(label, meta) { ensureFlow(label, meta); notify(); },
+    noteFlowAgent(label, agent) { const s = state.sessions[label]; if (!s) return; noteAgent(s, agent); notify(); },
+    appendFlowDelta(label, agent, text) {
       const s = state.sessions[label]; if (!s) return;
+      noteAgent(s, agent);
       s.isStreaming = true;
       s.assistantText += text;
       const nl = s.assistantText.lastIndexOf("\n");
       s.lastLine = nl === -1 ? s.assistantText : s.assistantText.slice(nl + 1);
       const last = s.entries[s.entries.length - 1];
-      if (last && last.type === "assistant") last.text += text;
-      else s.entries.push({ type: "assistant", text });
+      if (last && last.type === "assistant" && last.agent === agent) last.text += text;
+      else s.entries.push({ type: "assistant", agent, text });
       trimEntries(s); notify();
     },
-    appendFlowOutput(label, text) {
+    appendFlowOutput(label, agent, text) {
       const s = state.sessions[label]; if (!s) return;
-      s.entries.push({ type: "output", text: String(text) }); trimEntries(s); notify();
+      noteAgent(s, agent);
+      s.entries.push({ type: "output", agent, text: String(text) }); trimEntries(s); notify();
     },
-    setFlowAgentStatus(label, status) {
+    setFlowQuestion(label, agent, prompt) {
       const s = state.sessions[label]; if (!s) return;
-      s.status = status; if (status === "done" || status === "failed") s.isStreaming = false; notify();
-    },
-    setFlowQuestion(label, prompt) {
-      const s = state.sessions[label]; if (!s) return;
-      s.pendingQuestion = prompt; s.status = "awaiting";
-      s.entries.push({ type: "approve", text: prompt }); trimEntries(s);
+      noteAgent(s, agent);
+      s.pendingQuestion = { agent, prompt }; s.status = "awaiting";
+      s.entries.push({ type: "approve", agent, text: prompt }); trimEntries(s);
       pushNudgeToFocus(label, "要你确认");   // 非焦点时,焦点流冒「… 要你确认 · ^G 去看」(A 通道)
       notify();
     },
