@@ -429,6 +429,8 @@ async function main({
     const { makeCaptureStream } = await import("./ui/tui/capture.mjs");
 
     const store = createStore();
+    const { createFlowTui } = await import("./ui/tui/flow-tui.mjs");
+    const flowTui = createFlowTui({ store, openBackend, workflowsRoot: flowsRootTui, cwd, config, env });
     const cap = makeCaptureStream((line) => store.pushSystem(line));
 
     let smTui, composed;
@@ -450,7 +452,8 @@ async function main({
     let _dropDepthTui = () => {};
     const dispatchTui = createReplDispatch({
       sm: smTui, registry, stdout: cap, stderr: cap, defaultAgent: args.agent,
-      guardrails: { maxSessions: 10, maxDepth: 3, allowWrite: false }, config, flowStatus: () => "none",
+      guardrails: { maxSessions: 10, maxDepth: 3, allowWrite: false }, config,
+      runFlow: flowTui.runFlow, resumeFlow: flowTui.resumeFlow, flowStatus: flowTui.flowStatus,
       onCloseLabel: (label) => _dropDepthTui(label),
     });
     const wired = wireControl({
@@ -464,11 +467,38 @@ async function main({
     _dropDepthTui = wired.dropLabel;
     const drainControl = wired.drainControl, controlActivity = wired.controlActivity;
 
-    const syncFocus = () => { store.setFocus(smTui.currentLabel); for (const l of store.getState().order) if (!smTui._sessions.has(l)) store.dropSession(l); };
-    const onSelect = (label) => { if (smTui.use(label)) store.setFocus(label); };
-    const onCycle = () => { store.focusNext(); const f = store.getState().focusLabel; if (f) smTui.use(f); };
+    // syncFocus 收窄:flow 卡不在 smTui,既不能被当孤儿撤掉,也不能被 setFocus 抢走焦点
+    //(flow 卡生命周期由 flow-tui 的 endFlow/dropFlow 自管)。
+    const syncFocus = () => {
+      const fl = store.getState().focusLabel;
+      const fs = fl ? store.getState().sessions[fl] : null;
+      if (!fs || fs.kind !== "flow") store.setFocus(smTui.currentLabel);   // 焦点是真会话才跟随 smTui
+      for (const l of store.getState().order) {
+        const s = store.getState().sessions[l];
+        if (s && s.kind === "flow") continue;                              // 跳过 flow 卡
+        if (!smTui._sessions.has(l)) store.dropSession(l);
+      }
+    };
+    const onSelect = (label) => {
+      const s = store.getState().sessions[label];
+      if (s && s.kind === "flow") { store.setFocus(label); return; }       // flow 卡:直接聚焦,不碰 smTui
+      if (smTui.use(label)) store.setFocus(label);
+    };
+    const onCycle = () => {
+      store.focusNext();
+      const f = store.getState().focusLabel;
+      const s = f ? store.getState().sessions[f] : null;
+      if (f && s && s.kind !== "flow") smTui.use(f);                        // 只有真会话才同步 smTui current
+    };
     const dispatchWrapped = (line, opts) => {
       const source = opts?.source ?? "human";   // default human; don't miss echo when opts omitted
+      // flow 卡聚焦时:只读寻址——纯文本 human 行交给 flow-tui(有待答→作答 / 无待答→系统消息),
+      // 不进普通 dispatch。斜杠/@/$ 命令(含 /flow、/resume)仍走 dispatchTui。
+      if (source === "human" && !/^[/@$]/.test(line)) {
+        const fl = store.getState().focusLabel;
+        const fs = fl ? store.getState().sessions[fl] : null;
+        if (fs && fs.kind === "flow" && flowTui.handleHumanLine(fl, line)) { syncFocus(); return { redraw: true }; }
+      }
       const label = smTui.currentLabel;          // capture target label BEFORE dispatch (currentLabel may change during)
       const r = dispatchTui(line, opts);
       // Only echo a plain-text message that actually enqueued: plain text → {redraw:false} on success,
@@ -506,6 +536,7 @@ async function main({
       for (const [, info] of smTui._sessions) {
         try { Promise.resolve(info.session.abort?.()).catch(() => {}); } catch {}
       }
+      try { flowTui.abortAll(); } catch {}   // 同时中断在跑的 flow
       store.pushSystem("已打断当前 turn。1.5s 内再按一次 Ctrl+C 退出。");
       if (_interruptResetTimer) clearTimeout(_interruptResetTimer);
       _interruptResetTimer = setTimeout(() => { _interruptCount = 0; _interruptResetTimer = null; }, 1500);
