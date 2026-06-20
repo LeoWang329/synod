@@ -17,6 +17,16 @@ node src/cli.mjs --agent codex --model <M> --effort <E>   # 指定后端/模型/
 node src/cli.mjs --task omp:"任务甲" --task codex:"任务乙"   # 非交互:多会话并行,全部跑完即退出
 ```
 
+### 直接敲 `synod` 启动(全局命令)
+
+`package.json` 里已声明 `bin: { "synod": "src/cli.mjs" }`。在仓库根目录跑一次:
+
+```bash
+npm run link    # = npm link;把 synod 软链到全局 PATH
+```
+
+之后在**任意目录**直接 `synod`(或 `synod --no-tui` / `synod --help`)即可启动。软链直接指向本仓库,改源码即时生效、无需重链——**只有当仓库目录被移动或改名时**才需要再跑一次 `npm run link`。
+
 进入 REPL 后:
 
 - 普通一行 → 发给**当前会话**;`@<label> <消息>` → 定向某会话;`@all <消息>` → 广播。

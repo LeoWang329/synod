@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node src/cli.mjs",
+    "link": "npm link",
     "test": "node --test",
     "test:e2e": "node scripts/acceptance.mjs",
     "test:e2e-flow": "node scripts/acceptance-flow.mjs",
