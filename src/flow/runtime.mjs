@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 import { createCtx } from "./ctx.mjs";
 import { createApprove } from "./api/approve.mjs";
+import { createAsk } from "./api/ask.mjs";
 import { createLogger, shortHash } from "./logger.mjs";
 import { createAgent } from "./api/agent.mjs";
 import { createAgentLoop } from "./api/agentLoop.mjs";
@@ -217,6 +218,11 @@ export function createRuntime({
     headless: Boolean(headless), events, runsRoot, onApprovalNeeded,
   });
 
+  const ask = createAsk({
+    io: resolvedIo, logger, getSignal: signalFor, getReplay: replayStep,
+    headless: Boolean(headless), events, runsRoot, onApprovalNeeded,
+  });
+
   const reviseWithHuman = createReviseWithHuman({
     agent,
     approve,
@@ -278,6 +284,8 @@ export function createRuntime({
     defer: createDeferScope,
     /** approve() primitive — present content, wait for human decision. */
     approve,
+    /** ask() primitive — present a question, return the human's raw line. */
+    ask,
     /** reviseWithHuman() primitive — human-in-the-loop revision loop. */
     reviseWithHuman,
     /** disposeRun(ctx) — close reused sessions for a run. */

@@ -19,6 +19,10 @@ export function approve(ctx, opts) {
   return getCurrentRuntime().approve(ctx, opts);
 }
 
+export function ask(ctx, opts) {
+  return getCurrentRuntime().ask(ctx, opts);
+}
+
 export function agentLoop(ctx, opts) {
   return getCurrentRuntime().agentLoop(ctx, opts);
 }
