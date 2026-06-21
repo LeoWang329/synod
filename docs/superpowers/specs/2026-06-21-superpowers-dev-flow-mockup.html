@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Superpowers 开发链 → Synod Flow · 流程图</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --line:#2b3140;
+    --ink:#e6e9ef; --dim:#9aa3b2; --faint:#6b7383;
+    --codex:#a78bfa;      /* 强模型 codex 紫 */
+    --deepseek:#38bdf8;   /* 开发 deepseek 蓝 */
+    --human:#34d399;      /* 人 绿 */
+    --tool:#94a3b8;       /* bash/test 灰 */
+    --artifact:#f4b860;   /* 产物 黄 */
+    --stop:#f87171;       /* 刹车 红 */
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",Segoe UI,sans-serif;}
+  .wrap{max-width:1180px;margin:0 auto;padding:32px 24px 80px}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:var(--dim);margin:0 0 24px;font-size:13px}
+  .grid{display:grid;grid-template-columns:1fr 320px;gap:24px;align-items:start}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}}
+
+  /* pipeline */
+  .pipe{display:flex;flex-direction:column;align-items:stretch;gap:0}
+  .parent-tag{align-self:flex-start;font-size:12px;color:var(--codex);
+    border:1px dashed var(--line);border-radius:8px;padding:4px 10px;margin-bottom:14px}
+  .stage{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:16px 18px;position:relative}
+  .stage h3{margin:0 0 2px;font-size:16px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .stage .file{color:var(--faint);font-size:12px;font-family:ui-monospace,Menlo,monospace}
+  .stage .desc{color:var(--dim);font-size:13px;margin:8px 0 0}
+  .num{display:inline-flex;width:24px;height:24px;border-radius:50%;
+    background:var(--panel2);border:1px solid var(--line);align-items:center;justify-content:center;
+    font-size:13px;font-weight:700;color:var(--ink)}
+
+  .nodes{margin-top:12px;display:flex;flex-direction:column;gap:7px}
+  .node{display:flex;align-items:flex-start;gap:9px;background:var(--panel2);
+    border:1px solid var(--line);border-radius:9px;padding:8px 11px;font-size:13px}
+  .node .ico{flex:none;width:18px;text-align:center}
+  .node code{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#cbd5e1}
+
+  /* role badges */
+  .badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;border:1px solid}
+  .b-codex{color:var(--codex);border-color:var(--codex);background:rgba(167,139,250,.10)}
+  .b-deep{color:var(--deepseek);border-color:var(--deepseek);background:rgba(56,189,248,.10)}
+  .b-human{color:var(--human);border-color:var(--human);background:rgba(52,211,153,.10)}
+  .b-tool{color:var(--tool);border-color:var(--tool);background:rgba(148,163,184,.10)}
+
+  /* connectors */
+  .arrow{display:flex;flex-direction:column;align-items:center;padding:6px 0;color:var(--faint)}
+  .artifact{font-size:12px;color:var(--artifact);border:1px solid rgba(244,184,96,.4);
+    background:rgba(244,184,96,.07);border-radius:7px;padding:2px 10px;margin-bottom:2px;
+    font-family:ui-monospace,Menlo,monospace}
+  .arrow .v{font-size:18px;line-height:1}
+  .gate{align-self:center;font-size:12px;color:var(--human);border:1px dashed var(--human);
+    background:rgba(52,211,153,.06);border-radius:999px;padding:3px 12px;margin:4px 0}
+  .gate.opt{color:var(--faint);border-color:var(--line)}
+
+  /* execute-plan zoom */
+  .loopbox{margin-top:12px;border:1.5px dashed var(--deepseek);border-radius:11px;
+    padding:12px;background:rgba(56,189,248,.04)}
+  .loopbox .lt{font-size:12px;color:var(--deepseek);font-weight:700;margin-bottom:9px;
+    display:flex;align-items:center;gap:8px}
+  .cyc{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px}
+  .cyc .step{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+  .cyc .to{color:var(--faint)}
+  .backedge{margin-top:8px;font-size:12px;color:var(--stop);
+    border-top:1px dashed var(--line);padding-top:8px}
+  .stopline{margin-top:9px;font-size:12.5px;color:var(--stop);display:flex;gap:8px;align-items:flex-start}
+  .loopbox.codex{border-color:var(--codex);background:rgba(167,139,250,.05)}
+  .loopbox.codex .lt{color:var(--codex)}
+  .loopbox .decide{margin-top:11px;border-top:1px dashed var(--line);padding-top:11px}
+  .loopbox .dt{font-size:12px;color:var(--ink);font-weight:700;margin-bottom:9px}
+  .cyc .step .s{color:var(--faint);font-size:11px}
+  .loopbox .note{margin-top:11px;font-size:11.5px;color:var(--dim);line-height:1.5;
+    background:rgba(248,113,113,.06);border:1px solid rgba(248,113,113,.25);border-radius:8px;padding:8px 10px}
+  .loopbox .note b{color:var(--ink)}
+  .keys{display:flex;gap:8px;margin:2px 0 0;font-size:11px;color:var(--faint);flex-wrap:wrap}
+  .keys span{border:1px solid var(--line);border-radius:6px;padding:2px 7px}
+
+  .endcap{align-self:center;margin-top:6px;background:linear-gradient(180deg,#1f2937,#111827);
+    border:1px solid var(--line);border-radius:11px;padding:10px 22px;font-weight:700}
+
+  /* side */
+  .side{display:flex;flex-direction:column;gap:16px;position:sticky;top:20px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:14px 15px}
+  .card h4{margin:0 0 10px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
+  .leg{display:flex;align-items:center;gap:9px;margin:6px 0;font-size:13px}
+  .dot{width:11px;height:11px;border-radius:3px;flex:none}
+  .gates3 .opt-row{display:flex;gap:9px;align-items:baseline;margin:7px 0;font-size:12.5px}
+  .gates3 code{font-family:ui-monospace,Menlo,monospace;color:var(--human);min-width:46px;display:inline-block}
+  .gates3 .star{color:var(--artifact)}
+  .narr{font-size:13px;color:var(--dim);margin:0}
+  .narr b{color:var(--human)}
+  table.map{width:100%;border-collapse:collapse;font-size:12px}
+  table.map td{border-top:1px solid var(--line);padding:6px 4px;vertical-align:top}
+  table.map td:first-child{color:var(--dim);white-space:nowrap;padding-right:10px}
+  table.map code{color:#cbd5e1;font-family:ui-monospace,Menlo,monospace;font-size:11px}
+  .foot{margin-top:30px;color:var(--faint);font-size:12px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Superpowers 开发链 → Synod Flow</h1>
+  <p class="sub">头脑风暴 → spec → 计划 → subagent 开发 → review，编码成「按产物切的子 flow 链」。强模型=codex，开发=deepseek。父 flow <code>superpowers.mjs</code> 用 <code>runWorkflow</code> 串四段。</p>
+
+  <div class="grid">
+    <!-- ============ PIPELINE ============ -->
+    <div class="pipe">
+      <div class="parent-tag">⑂ 父 flow · superpowers.mjs — runWorkflow 串 4 段 + 接缝人审(可配)</div>
+
+      <!-- 1 brainstorm -->
+      <div class="stage">
+        <h3><span class="num">1</span> 头脑风暴 → spec <span class="badge b-codex">codex 对话</span></h3>
+        <div class="file">workflows/brainstorm-spec.mjs</div>
+        <div class="desc">子 agent 自适应提问，人作答，循环到「两把钥匙」都到位才结束。JS 不懂语义，只查记号 / 人决定 / 轮数。</div>
+
+        <div class="loopbox codex">
+          <div class="lt">↻ 提问循环（人在环豁免硬上限；MAX 仅防失控）</div>
+          <div class="cyc">
+            <span class="step" style="border-color:var(--codex)">codex 问下一个澄清问题 <span class="s">reuse 会话</span></span>
+            <span class="to">→</span>
+            <span class="step" style="border-color:var(--human)">🟢 人作答 <code>ask()</code></span>
+            <span class="to">→</span>
+            <span class="step">喂回 transcript</span>
+            <span class="to">↩︎</span>
+            <span class="step" style="border-color:var(--codex)">再问</span>
+          </div>
+
+          <div class="decide">
+            <div class="dt">判定「头脑风暴结束了吗」= JS 只查两把钥匙 + 刹车</div>
+            <div class="cyc">
+              <span class="step" style="border-color:var(--codex)">① codex 吐 <code>&lt;&lt;&lt;SPEC&gt;&gt;&gt;</code> 记号<br><span class="s">提议：够了 + 草稿</span></span>
+              <span class="to">→</span>
+              <span class="step" style="border-color:var(--human)">② 🟢 人 accept<br><span class="s">拍板：才真结束</span></span>
+              <span class="to">→</span>
+              <span class="step" style="border-color:var(--artifact)">✅ 写 spec.md</span>
+            </div>
+            <div class="backedge" style="color:var(--codex);border-color:var(--line)">↩︎ 人不 accept、给反馈 → 草稿没过，带反馈接着聊</div>
+            <div class="stopline"><span>⛔</span><div><b style="color:var(--stop)">刹车</b>：到 MAX 轮 / 人打 <code>/spec</code> → 强制收尾，别让 codex 一直问下去</div></div>
+            <div class="keys"><span>钥匙① = agent 提议（记号）</span><span>钥匙② = 人拍板（accept）</span><span>刹车 = MAX / <code>/spec</code></span></div>
+          </div>
+
+          <div class="note">⚠︎ 记号只是<b>提议</b>，不盲信（codex 未必每次老实吐）；<b>人 accept 才算数</b>。提问取人答要新原语 <b><code>ask()</code></b>——只返回人打的原始整行，不像 <code>approve</code> 把「ok / 空行」误判成 accept / abort。<b>这是要写进 spec 的新增项。</b></div>
+        </div>
+      </div>
+
+      <div class="arrow"><div class="artifact">▼ 产物 · spec.md</div><div class="gate opt">人审卡口 · 仅 gates = all</div></div>
+
+      <!-- 2 plan -->
+      <div class="stage">
+        <h3><span class="num">2</span> 写计划 <span class="badge b-codex">codex</span></h3>
+        <div class="file">workflows/spec-to-plan.mjs</div>
+        <div class="desc">读 spec 产出 TDD 计划（task 列表），人在环改稿定稿。</div>
+        <div class="nodes">
+          <div class="node"><span class="ico">📝</span><div><code>agent(codex)</code> 由 spec 产出分 task 的实现计划</div></div>
+          <div class="node"><span class="ico">🟢</span><div><code>reviseWithHuman()</code> 人给自然语言反馈→改→定稿 <span class="badge b-human" style="margin-left:4px">人</span></div></div>
+          <div class="node"><span class="ico">💾</span><div>→ <code>plan.md</code></div></div>
+        </div>
+      </div>
+
+      <div class="arrow"><div class="artifact">▼ 产物 · plan.md (task 列表)</div><div class="gate opt">人审卡口 · 仅 gates = all</div></div>
+
+      <!-- 3 execute -->
+      <div class="stage" style="border-color:var(--deepseek)">
+        <h3><span class="num">3</span> subagent 驱动开发 <span class="badge b-deep">deepseek 写</span><span class="badge b-codex">codex 审</span><span style="font-size:11px;color:var(--faint)">最肥</span></h3>
+        <div class="file">workflows/execute-plan.mjs</div>
+        <div class="desc"><code>parsePlan()</code> 解析 task 列表 → JS <code>for</code> 逐 task；并行写用 <code>workspace</code> git worktree 隔离。</div>
+
+        <div class="loopbox">
+          <div class="lt">↻ 每个 task：backtrack 循环（≤ 3 轮）</div>
+          <div class="cyc">
+            <span class="step" style="border-color:var(--deepseek)">deepseek 写码 <span style="color:var(--faint)">write:true · worktree</span></span>
+            <span class="to">→</span>
+            <span class="step" style="border-color:var(--tool)">bash <code>npm test</code></span>
+            <span class="to">→</span>
+            <span class="step" style="border-color:var(--codex)">codex 审 <span style="color:var(--faint)">write:false</span></span>
+            <span class="to">→</span>
+            <span class="step">PASS?</span>
+          </div>
+          <div class="backedge">↩︎ 不过：把「测试输出 + codex 反馈」喂回 deepseek 重写（带反馈回退，非回滚世界）</div>
+          <div class="stopline"><span>⛔</span><div><b style="color:var(--stop)">自动刹车</b>：3 轮仍红 / codex 仍拒 → <b style="color:var(--stop)">停在此 task，不往下合</b>（绝不硬塞坏码）</div></div>
+        </div>
+
+        <div class="nodes" style="margin-top:10px">
+          <div class="node"><span class="ico">🟢</span><div>每 task 验收 <code>approve()</code> <span class="badge b-human" style="margin-left:4px">人</span> · 仅 gates = all</div></div>
+        </div>
+      </div>
+
+      <div class="arrow"><div class="artifact">▼ 产物 · diff（worktree：干净自动合 / 冲突留存待你）</div><div class="gate opt">人审卡口 · 仅 gates = all</div></div>
+
+      <!-- 4 review -->
+      <div class="stage">
+        <h3><span class="num">4</span> 最终 code review <span class="badge b-codex">codex</span></h3>
+        <div class="file">workflows/final-review.mjs</div>
+        <div class="desc">对全量 diff 做一遍独立评审，不过则带反馈修。</div>
+        <div class="nodes">
+          <div class="node"><span class="ico">🔎</span><div><code>agent(codex, write:false)</code> 审全 diff</div></div>
+          <div class="node"><span class="ico">🔧</span><div><code>backtrack</code> 有问题 → deepseek 修 → 复审</div></div>
+        </div>
+      </div>
+
+      <div class="arrow"><div class="gate">✅ 最终人审 · gates ≥ final（默认建议留这一处）</div></div>
+      <div class="endcap">合并 / 开 PR</div>
+    </div>
+
+    <!-- ============ SIDE ============ -->
+    <div class="side">
+      <div class="card">
+        <h4>角色 / 图例</h4>
+        <div class="leg"><span class="dot" style="background:var(--codex)"></span> codex — 强模型：brainstorm · plan · review</div>
+        <div class="leg"><span class="dot" style="background:var(--deepseek)"></span> deepseek — 开发写码（write:true）</div>
+        <div class="leg"><span class="dot" style="background:var(--human)"></span> 人 — 头脑风暴对话 + 可配人审卡口</div>
+        <div class="leg"><span class="dot" style="background:var(--tool)"></span> bash / npm test — 自动验证</div>
+        <div class="leg"><span class="dot" style="background:var(--artifact)"></span> 产物 — 子 flow 间的纯数据交接（= 天然边界）</div>
+      </div>
+
+      <div class="card gates3">
+        <h4>人审卡口 = input 开关</h4>
+        <div class="opt-row"><code>none</code><span>全自动零人审 — <span class="star">你的选择（默认）</span></span></div>
+        <div class="opt-row"><code>final</code><span>只最终合并前停一次（几乎零成本，建议留）</span></div>
+        <div class="opt-row"><code>all</code><span>spec后 / plan后 / 每task后 / 最终（superpowers 原意）</span></div>
+        <p class="narr" style="margin-top:10px;font-size:12px">绿色虚线卡口随档位开关；codex 评审 + npm test <b style="color:var(--codex)">永远在</b>，那不是你、跳不掉。</p>
+      </div>
+
+      <div class="card">
+        <h4>你走开后发生什么</h4>
+        <p class="narr">跟它<b>头脑风暴聊出 spec</b> → 然后走开 → 它自己 plan、deepseek 写码、codex 审、跑测、合并 → 你回来收一个<b>干好的 PR</b>。过不了测试/评审就<b style="color:#f87171">停下等你</b>，不闭眼合。</p>
+      </div>
+
+      <div class="card">
+        <h4>原语映射</h4>
+        <table class="map">
+          <tr><td>提问↔作答</td><td><code>agent(reuse)</code> + <code>approve</code></td></tr>
+          <tr><td>人审改稿</td><td><code>reviseWithHuman</code></td></tr>
+          <tr><td>写→测→审→回退</td><td><code>backtrack</code> + <code>bash</code></td></tr>
+          <tr><td>并行写隔离</td><td><code>agent(workspace)</code> worktree</td></tr>
+          <tr><td>串子 flow</td><td><code>runWorkflow</code></td></tr>
+          <tr><td>中断续跑</td><td>step 级 <code>resume</code></td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <p class="foot">mockup · 2026-06-21 · 看一眼用，认了我再落正式 spec</p>
+</div>
+</body>
+</html>
