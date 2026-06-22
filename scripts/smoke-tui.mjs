@@ -116,11 +116,11 @@ async function main() {
   await sleep(60);
   ok("Ctrl-O keystroke reaches App → dispatch('/open')", dispatchCalls.length > callsBefore && dispatchCalls.at(-1) === "/open");
 
-  // 4) ↑ selects the tool card (real key bytes through Ink useInput).
+  // 4) ↑ 现在是焦点区滚动(不再选卡);Ctrl-E 回退到「最近的 tool 卡」展开(real key bytes through Ink useInput)。
   stdin.write("\x1b[A");
   await sleep(50);
 
-  // 5) Ctrl-E expands the selected card.
+  // 5) Ctrl-E expands the most-recent card (selIdx 已不由方向键设置 → 走 last-card 回退)。
   stdin.write("\x05");
   await sleep(60);
 
@@ -215,6 +215,19 @@ async function main() {
   ok("续聊:会话回复续写进同一张卡(不蹦新卡)",
     store.getState().order.length === beforeOrder
     && store.getState().sessions[flowLabel].entries.some((e) => e.type === "assistant" && /续聊的新题目/.test(e.text)));
+
+  // 9) 焦点区滚动:内容溢出(60 条历史 > 视口)→ 右侧滚动条滑块(█)渲染;↑/PgUp/Esc 键不崩(仍持续渲染)。
+  // sleep 给足:滚动条要等 measure→onMeasure→setDims→重渲 这条级联落地(比一帧慢一拍;真终端亚帧无感)。
+  store.setFocus("omp#1");
+  for (let i = 0; i < 60; i++) store.pushUser("omp#1", `历史行 ${i}`);
+  await sleep(160);
+  ok("滚动:内容溢出 → 渲染右侧滚动条滑块 █", stdout.text().includes("█"));
+  const lenBefore = stdout.text().length;
+  stdin.write("\x1b[A");    // ↑ 上滚一行
+  stdin.write("\x1b[5~");   // PgUp 翻页
+  stdin.write("\x1b");      // Esc 回到最新
+  await sleep(60);
+  ok("滚动:↑/PgUp/Esc 不崩(键后仍在渲染)", stdout.text().length >= lenBefore);
 
   try { tui.teardown ? tui.teardown() : tui.unmount(); } catch {}
 

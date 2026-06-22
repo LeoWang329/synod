@@ -65,7 +65,7 @@ test("Ctrl-E 切换当前选中 tool 卡的 expanded(经 store.toggleEntry)", as
   const tool = store.getState().sessions["omp#1"].entries.find((x) => x.type === "tool");
   assert.strictEqual(tool.expanded, true);
 });
-test("↑/↓ 移动选中游标(经 selIdx,高亮 tool 卡)", async () => {
+test("↑/↓ 改为滚动焦点区(不再选卡);Ctrl-E 仍展开最近的 tool 卡", async () => {
   const store = createStore();
   const s = new EventEmitter();
   store.attachSession("omp#1", s, "omp", {});
@@ -73,12 +73,50 @@ test("↑/↓ 移动选中游标(经 selIdx,高亮 tool 卡)", async () => {
   s.emit("toolevent", { type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: {} });
   s.emit("toolevent", { type: "tool_execution_end", toolCallId: "t1", result: { content: [{ text: "x" }] } });
   const { stdin } = render(html`<${App} ...${base(store)} />`);
-  stdin.write("\x1b[A");  // up arrow → selects the (only) tool card, then Ctrl-E expands it
+  stdin.write("\x1b[A");  // ↑ 现在是滚动,不再选卡(不应抛错)
+  stdin.write("\x1b[5~"); // PgUp
+  stdin.write("\x1b");    // Esc 回最新
   await new Promise((r) => setTimeout(r, 20));
-  stdin.write("\x05");
+  stdin.write("\x05");    // Ctrl-E → 回退到「最近的 tool 卡」展开
   await new Promise((r) => setTimeout(r, 20));
   const tool = store.getState().sessions["omp#1"].entries.find((x) => x.type === "tool");
   assert.strictEqual(tool.expanded, true);
+});
+
+test("斜杠菜单打开:Tab 把高亮项补全进输入框(不轮换)", async () => {
+  const store = createStore();
+  store.attachSession("omp#1", new EventEmitter(), "omp", {});
+  let cycled = 0;
+  const props = { ...base(store), onCycle: () => { cycled++; } };
+  const { stdin, lastFrame } = render(html`<${App} ...${props} />`);
+  stdin.write("/op");          // 弹出 slash 菜单(唯一候选 /open)
+  await new Promise((r) => setTimeout(r, 20));
+  stdin.write("\t");           // Tab → 补全为 "/open "
+  await new Promise((r) => setTimeout(r, 20));
+  assert.strictEqual(cycled, 0, "菜单打开时 Tab 不应轮换");
+  assert.match(lastFrame(), /\/open/);
+});
+test("斜杠菜单打开:↓ 移动高亮,Tab 补全的是被选中的那条", async () => {
+  const store = createStore();
+  store.attachSession("omp#1", new EventEmitter(), "omp", {});
+  const { stdin, lastFrame } = render(html`<${App} ...${base(store)} />`);
+  stdin.write("/");            // 全部 slash 命令,首项 /open 高亮
+  await new Promise((r) => setTimeout(r, 20));
+  stdin.write("\x1b[B");       // ↓ → 第二项 /use 高亮
+  await new Promise((r) => setTimeout(r, 20));
+  stdin.write("\t");           // Tab → 补全 /use
+  await new Promise((r) => setTimeout(r, 20));
+  assert.match(lastFrame(), /\/use /);
+});
+test("输入为空(无菜单)时 Tab 仍轮换", async () => {
+  const store = createStore();
+  store.attachSession("omp#1", new EventEmitter(), "omp", {});
+  let cycled = 0;
+  const props = { ...base(store), onCycle: () => { cycled++; } };
+  const { stdin } = render(html`<${App} ...${props} />`);
+  stdin.write("\t");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(cycled >= 1);
 });
 
 test("Ctrl-G 跳到 awaiting 的后台 agent(经 onSelect)", async () => {

@@ -38,3 +38,12 @@ export function computeHints(line, ctx) {
   if (cmd === "/flow" && parts.length <= 2) return { kind: "arg", ...mk(ctx.flows.filter((n) => n.startsWith(word))) };
   return { kind: "none", items: [] };
 }
+
+// 把候选补全进当前行:替换行尾最后一个 token(slash/@/arg 三种补全的 value 都是「该 token 应有的样子」,
+// 故统一替换最后一个非空白片段即可)。补全后补一个空格以便接着出下一段提示——但 value 以 `->` 结尾
+// (relay 的中间态 `a->`)时不补,否则下一轮 computeHints 会把箭头左侧丢掉。
+export function applyHint(line, value) {
+  const m = String(line).match(/^([\s\S]*\s)?(\S*)$/);   // head 含末尾空白;tail = 最后一个 token
+  const head = m[1] || "";
+  return head + value + (value.endsWith("->") ? "" : " ");
+}
