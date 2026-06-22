@@ -4,8 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRuntime } from "../src/flow/runtime.mjs";
 import { runFlow } from "../src/flow/runner.mjs";
-import * as superpowers from "../workflows/superpowers.mjs";
-import { gate } from "../workflows/superpowers.mjs";
+import * as superpowers from "../workflows/superpowers/index.mjs";
+import { gate } from "../workflows/superpowers/index.mjs";
 import { FakeSession } from "./helpers/fake-backend.mjs";
 
 const WORKFLOWS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../workflows");

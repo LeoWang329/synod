@@ -1,5 +1,7 @@
 /**
- * workflows/superpowers.mjs — 父 flow:串 brainstorm→spec→plan→execute→review。
+ * workflows/superpowers/index.mjs — 父 flow:串 brainstorm→spec→plan→execute→review。
+ * 入口约定:目录 superpowers/ + index.mjs ⇒ flow 名 = superpowers(/flow superpowers)。
+ * 子 flow 在同目录,runWorkflow 用相对 workflowsRoot 的全路径 "superpowers/<子>"。
  *
  * 子流程间用**返回值**交接(spec 文本→plan 文本→开发结果)。gates 开关控制接缝人审。
  * 注:brainstorm 的提问对话(ask)与 codex 评审 + 测试**永远在**,gates 只关人审 approve。
@@ -24,7 +26,7 @@ export async function run(ctx, input) {
   const testCmd = input?.testCmd ?? "npm test";
 
   // ① 头脑风暴 → spec
-  const bs = await runWorkflow(ctx, "brainstorm-spec", { topic: input?.topic, maxTurns: input?.maxTurns });
+  const bs = await runWorkflow(ctx, "superpowers/brainstorm-spec", { topic: input?.topic, maxTurns: input?.maxTurns });
   if (bs.aborted) return { status: "aborted", at: "brainstorm" };
   if (gate("spec", gates)) {
     const d = await approve(ctx, { content: bs.specText });
@@ -32,19 +34,19 @@ export async function run(ctx, input) {
   }
 
   // ② 写计划
-  const plan = await runWorkflow(ctx, "spec-to-plan", { specText: bs.specText });
+  const plan = await runWorkflow(ctx, "superpowers/spec-to-plan", { specText: bs.specText });
   if (gate("plan", gates)) {
     const d = await approve(ctx, { content: plan.planText });
     if (d.aborted) return { status: "aborted", at: "plan-gate" };
   }
 
   // ③ subagent 驱动开发(自动刹车:某 task 写不过 → halted)
-  const dev = await runWorkflow(ctx, "execute-plan", { planText: plan.planText, testCmd, gates });
+  const dev = await runWorkflow(ctx, "superpowers/execute-plan", { planText: plan.planText, testCmd, gates });
   if (!dev.done) return { status: "halted", at: dev.failedTask, completed: dev.completed };
   if (gate("dev", gates)) await approve(ctx, { content: `开发完成 tasks: ${dev.completed.join(", ")}` });
 
   // ④ 最终 review
-  const rev = await runWorkflow(ctx, "final-review", { testCmd });
+  const rev = await runWorkflow(ctx, "superpowers/final-review", { testCmd });
   if (gate("final", gates)) await approve(ctx, { content: rev.report });
 
   return { status: "done", specText: bs.specText, planText: plan.planText, completed: dev.completed, review: rev };

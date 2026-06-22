@@ -1,9 +1,14 @@
-import { readdir, readFile, realpath } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { resolve, extname, sep } from "node:path";
+import { resolve, extname, sep, relative } from "node:path";
 
 /** The only module that flow files are allowed to statically import. */
 const ALLOWED_IMPORT = "synod/flow";
+
+/** @returns true if `p` exists and is a regular file. */
+async function isFile(p) {
+  try { return (await stat(p)).isFile(); } catch { return false; }
+}
 
 /** @returns true if `c` is a JS identifier character. */
 function isIdent(c) {
@@ -450,14 +455,12 @@ function scanImports(source) {
  * @param {string} dir   – absolute path to scan (e.g. workflows/)
  * @returns {Promise<Array<{name: string, meta: object, run: Function, path: string}>>}
  */
-export async function discoverFlows(dir) {
-  const entries = await readdir(dir, { withFileTypes: true });
+export async function discoverFlows(rootDir) {
   const flows = [];
   const errors = [];
-  for (const entry of entries) {
-    if (!entry.isFile() || extname(entry.name) !== ".mjs") continue;
-    const name = entry.name.slice(0, -4);
-    const absPath = resolve(dir, entry.name);
+
+  /** Lint → import → validate one .mjs flow; register under `name`. */
+  async function processFile(absPath, name) {
     const url = pathToFileURL(absPath).href;
     try {
       const source = await readFile(absPath, "utf-8");
@@ -475,6 +478,31 @@ export async function discoverFlows(dir) {
       errors.push({ name, error: err.message });
     }
   }
+
+  /**
+   * Recursively walk `dir`, registering every *.mjs flow.
+   * Flow name = path relative to rootDir, "/"-separated, minus ".mjs".
+   * A "<sub>/index.mjs" registers under the directory name "<sub>"
+   * (directory entry-point convention), so `/flow <sub>` runs the suite.
+   * node_modules / dot-dirs never hold authored flows → skipped.
+   */
+  async function walk(dir) {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const abs = resolve(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+        await walk(abs);
+        continue;
+      }
+      if (!entry.isFile() || extname(entry.name) !== ".mjs") continue;
+      const rel = relative(rootDir, abs).split(sep).join("/");
+      const name = rel.slice(0, -4).replace(/\/index$/, "");
+      await processFile(abs, name);
+    }
+  }
+
+  await walk(rootDir);
   return { flows, errors };
 }
 
@@ -508,7 +536,19 @@ export async function loadFlow(workflowsRoot, ref) {
     );
   }
 
-  const withExt = cleanRef.endsWith(".mjs") ? cleanRef : `${cleanRef}.mjs`;
+  // Resolve to a file: prefer "<ref>.mjs"; fall back to the directory
+  // entry-point "<ref>/index.mjs" so `runWorkflow(ctx, "superpowers")` and
+  // `/flow superpowers` hit workflows/superpowers/index.mjs.
+  let withExt;
+  if (cleanRef.endsWith(".mjs")) {
+    withExt = cleanRef;
+  } else if (await isFile(resolve(workflowsRoot, `${cleanRef}.mjs`))) {
+    withExt = `${cleanRef}.mjs`;
+  } else if (await isFile(resolve(workflowsRoot, `${cleanRef}/index.mjs`))) {
+    withExt = `${cleanRef}/index.mjs`;
+  } else {
+    withExt = `${cleanRef}.mjs`; // neither exists → readFile below reports not-found
+  }
   const absPath = resolve(workflowsRoot, withExt);
 
   // Path-escape guard: resolved path must stay inside workflowsRoot
@@ -555,10 +595,8 @@ export async function loadFlow(workflowsRoot, ref) {
     }
   }
 
-  // Derive name from filename (last path segment without .mjs)
-  const segments = withExt.split("/");
-  const filename = segments[segments.length - 1];
-  const name = filename.slice(0, -4);
+  // Flow name = ref path minus .mjs; directory entry-point "<d>/index" → "<d>".
+  const name = withExt.slice(0, -4).replace(/\/index$/, "");
 
   // ── 1. Read source + lint BEFORE any module execution ──────────
   const url = pathToFileURL(absPath).href;

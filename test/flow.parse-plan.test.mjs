@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { parsePlan } from "../workflows/execute-plan.mjs";
+import { parsePlan } from "../workflows/superpowers/execute-plan.mjs";
 
 describe("parsePlan", () => {
   it("解析多个 Task 段", () => {

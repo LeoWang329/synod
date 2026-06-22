@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import { createRuntime } from "../src/flow/runtime.mjs";
 import { runFlow } from "../src/flow/runner.mjs";
-import * as brainstorm from "../workflows/brainstorm-spec.mjs";
+import * as brainstorm from "../workflows/superpowers/brainstorm-spec.mjs";
 import { FakeSession } from "./helpers/fake-backend.mjs";
 
 function memoryFs() {

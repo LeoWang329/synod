@@ -2,7 +2,7 @@ import { describe, it, test } from "node:test";
 import assert from "node:assert";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { discoverFlows } from "../src/flow/loader.mjs";
+import { discoverFlows, loadFlow } from "../src/flow/loader.mjs";
 
 const FIXTURES_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -150,4 +150,27 @@ test("P2-16 discoverFlows 单个坏 flow 降级为 {name,error} 不炸整列表"
   const { flows, errors } = await discoverFlows(dir);
   assert.ok(flows.some((f) => f.name === "good"), "好 flow 仍在");
   assert.ok(errors.some((e) => e.name === "bad"), "坏 flow 降级为 errors 条目");
+});
+
+const NESTED_ROOT = resolve(FIXTURES_ROOT, "nested-root");
+
+test("discoverFlows 递归子目录 + index 入口命名", async () => {
+  const { flows } = await discoverFlows(NESTED_ROOT);
+  const names = flows.map((f) => f.name).sort();
+  // top.mjs → "top";suite/index.mjs → "suite"(目录入口);suite/alpha.mjs → "suite/alpha"
+  assert.deepStrictEqual(names, ["suite", "suite/alpha", "top"]);
+});
+
+test("loadFlow <dir> 回退到 <dir>/index.mjs;子路径直达", async () => {
+  const entry = await loadFlow(NESTED_ROOT, "suite");
+  assert.strictEqual(entry.name, "suite");
+  assert.ok(entry.path.replace(/\\/g, "/").endsWith("suite/index.mjs"),
+    `index 入口未命中: ${entry.path}`);
+
+  const sub = await loadFlow(NESTED_ROOT, "suite/alpha");
+  assert.strictEqual(sub.name, "suite/alpha");
+  assert.ok(sub.path.replace(/\\/g, "/").endsWith("suite/alpha.mjs"));
+
+  const flat = await loadFlow(NESTED_ROOT, "top");
+  assert.strictEqual(flat.name, "top");
 });

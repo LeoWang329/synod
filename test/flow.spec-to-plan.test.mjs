@@ -2,8 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import { createRuntime } from "../src/flow/runtime.mjs";
 import { runFlow } from "../src/flow/runner.mjs";
-import * as s2p from "../workflows/spec-to-plan.mjs";
-import { parsePlan } from "../workflows/execute-plan.mjs";
+import * as s2p from "../workflows/superpowers/spec-to-plan.mjs";
+import { parsePlan } from "../workflows/superpowers/execute-plan.mjs";
 import { FakeSession } from "./helpers/fake-backend.mjs";
 
 function memoryFs() {

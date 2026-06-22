@@ -10,9 +10,18 @@
 
 ## 1. 放哪 & 叫什么
 
+**单个 flow:**
 - 文件放 `workflows/<name>.mjs`。
 - **flow 名 = 文件名(去掉 `.mjs`)**。`workflows/release-notes.mjs` 的名字就是 `release-notes`。
 - 一个文件一个 flow。文件名用 kebab-case,见名知意。
+
+**成套的复合 flow(父 flow + 多个子 flow):放进 `workflows/<suite>/` 子文件夹。**
+- 入口父 flow = `workflows/<suite>/index.mjs`,**flow 名 = 目录名 `<suite>`**(`/flow <suite>` 直接跑)。
+- 子 flow = `workflows/<suite>/<child>.mjs`,**flow 名 = `<suite>/<child>`**(`/flow <suite>/<child>`)。
+- 父 flow 内 `runWorkflow` 引用子 flow 用相对 workflowsRoot 的**全路径** `"<suite>/<child>"`——**不要**写 `"./<child>"`(`./` 会被解析为相对 workflowsRoot 根,不是当前文件目录)。
+- 每套配一份 `workflows/<suite>/README.md`,讲清怎么串、各子 flow 职责、单跑 vs 整体跑。
+- `discoverFlows` **递归**扫描子目录,故子文件夹 flow 会出现在 `/flow` 列表(带 `<suite>/` 前缀);`loadFlow` 对 `<suite>` 自动回退到 `<suite>/index.mjs`。
+- 范例见 `workflows/superpowers/`。
 
 ## 2. 必须导出两样东西
 
