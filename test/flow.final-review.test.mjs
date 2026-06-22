@@ -14,7 +14,7 @@ function fakeWorkspace(cwd) {
 }
 
 describe("final-review", () => {
-  it("codex 直接 APPROVE → approved:true", async () => {
+  it("直接 APPROVE → approved:true", async () => {
     const backend = async ({ agent }) => new FakeSession({ agent, deltas: ["APPROVE"] });
     const rt = createRuntime({ fs: memoryFs(), clock: () => 0, openBackend: backend, runWorkspace: fakeWorkspace(process.cwd()) });
     const ctx = rt.createCtx({ input: {} });
@@ -24,9 +24,9 @@ describe("final-review", () => {
   });
 
   it("先 REJECT → deepseek 修 → 复审 APPROVE", async () => {
-    const codexVerdicts = ["REJECT 缺测试", "APPROVE"];
-    const backend = async ({ agent }) =>
-      new FakeSession({ agent, deltas: [agent === "codex" ? codexVerdicts.shift() : "fixed"] });
+    const verdicts = ["REJECT 缺测试", "APPROVE"];
+    const backend = async ({ agent, write }) =>
+      new FakeSession({ agent, deltas: [write ? "fixed" : verdicts.shift()] });
     const rt = createRuntime({ fs: memoryFs(), clock: () => 0, openBackend: backend, runWorkspace: fakeWorkspace(process.cwd()) });
     const ctx = rt.createCtx({ input: {} });
     const out = await runFlow(rt, fr, ctx, {});
@@ -34,8 +34,8 @@ describe("final-review", () => {
   });
 
   it("两轮都 REJECT → approved:false", async () => {
-    const backend = async ({ agent }) =>
-      new FakeSession({ agent, deltas: [agent === "codex" ? "REJECT 还不行" : "tried"] });
+    const backend = async ({ agent, write }) =>
+      new FakeSession({ agent, deltas: [write ? "tried" : "REJECT 还不行"] });
     const rt = createRuntime({ fs: memoryFs(), clock: () => 0, openBackend: backend, runWorkspace: fakeWorkspace(process.cwd()) });
     const ctx = rt.createCtx({ input: {} });
     const out = await runFlow(rt, fr, ctx, {});

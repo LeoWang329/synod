@@ -4,7 +4,7 @@
  * 子 flow 在同目录,runWorkflow 用相对 workflowsRoot 的全路径 "superpowers/<子>"。
  *
  * 子流程间用**返回值**交接(spec 文本→plan 文本→开发结果)。gates 开关控制接缝人审。
- * 注:brainstorm 的提问对话(ask)与 codex 评审 + 测试**永远在**,gates 只关人审 approve。
+ * 注:brainstorm 的提问对话(ask)与 deepseek 评审 + 测试**永远在**,gates 只关人审 approve。
  * flow 名 = superpowers。写之前读 docs/FLOW_AUTHORING.md。
  */
 import { runWorkflow, approve } from "synod/flow";

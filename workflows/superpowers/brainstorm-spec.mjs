@@ -1,5 +1,5 @@
 /**
- * workflows/brainstorm-spec.mjs — codex 自适应提问 + 人作答,两把钥匙判定结束。
+ * workflows/brainstorm-spec.mjs — deepseek 自适应提问 + 人作答,两把钥匙判定结束。
  *
  * 钥匙①(agent 提议) = agent 吐 <<<SPEC>>> 记号(其后是设计稿草稿)。
  * 钥匙②(人拍板)     = 草稿经 approve,人 accept 才真结束。
@@ -11,10 +11,11 @@
 import { agent, ask, approve } from "synod/flow";
 
 export const meta = {
-  description: "codex 头脑风暴自适应提问 + 人作答,产出 spec 设计稿",
+  description: "deepseek 头脑风暴自适应提问 + 人作答,产出 spec 设计稿",
   // inputs: { topic, maxTurns? }
 };
 
+const MODEL = "deepseek/deepseek-v4-pro";
 const SENTINEL = "<<<SPEC>>>";
 
 const SKILL_HINT =
@@ -40,7 +41,7 @@ export async function run(ctx, input) {
     if (turn > maxTurns) force = true;   // 到上限那一轮强制收尾
 
     const out = await agent(ctx, {
-      agent: "codex", reuse: true,
+      agent: "omp", model: MODEL, reuse: true,
       prompt: askPrompt(transcript, force),
     });
 

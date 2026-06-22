@@ -16,9 +16,10 @@ function fakeWorkspace(cwd) {
 }
 
 // fake openBackend:按 agent 名派发文本。FakeSession 返回文本靠 deltas(非 text)。
-function backendBy({ codex, writer }) {
-  return async ({ agent }) => {
-    const text = agent === "codex" ? codex() : writer();
+// 全链走 omp+deepseek;以 write 标志区分角色:write:true=写码,否则=审。
+function backendBy({ review, writer }) {
+  return async ({ agent, write }) => {
+    const text = write ? writer() : review();
     return new FakeSession({ agent, deltas: [text] });
   };
 }
@@ -27,7 +28,7 @@ describe("execute-plan", () => {
   it("单 task 一次过 → done", async () => {
     const rt = createRuntime({
       fs: memoryFs(), clock: () => 0,
-      openBackend: backendBy({ codex: () => "APPROVE", writer: () => "written" }),
+      openBackend: backendBy({ review:() => "APPROVE", writer: () => "written" }),
       runWorkspace: fakeWorkspace(process.cwd()),
     });
     const ctx = rt.createCtx({ input: {} });
@@ -43,7 +44,7 @@ describe("execute-plan", () => {
   it("task 测试持续失败 → 自动刹车 {done:false, failedTask}", async () => {
     const rt = createRuntime({
       fs: memoryFs(), clock: () => 0,
-      openBackend: backendBy({ codex: () => "REJECT 还不行", writer: () => "written" }),
+      openBackend: backendBy({ review:() => "REJECT 还不行", writer: () => "written" }),
       runWorkspace: fakeWorkspace(process.cwd()),
     });
     const ctx = rt.createCtx({ input: {} });
@@ -60,7 +61,7 @@ describe("execute-plan", () => {
   it("两个 task 顺序完成 → completed [1,2]", async () => {
     const rt = createRuntime({
       fs: memoryFs(), clock: () => 0,
-      openBackend: backendBy({ codex: () => "APPROVE", writer: () => "written" }),
+      openBackend: backendBy({ review:() => "APPROVE", writer: () => "written" }),
       runWorkspace: fakeWorkspace(process.cwd()),
     });
     const ctx = rt.createCtx({ input: {} });

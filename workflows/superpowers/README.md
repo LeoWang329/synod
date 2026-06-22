@@ -37,10 +37,10 @@
 | flow | 输入 | 干什么 | 角色 |
 |---|---|---|---|
 | `superpowers`(index) | `{topic, gates?, testCmd?, maxTurns?}` | 编排 4 段 + gates | — |
-| `superpowers/brainstorm-spec` | `{topic, maxTurns?}` | 两把钥匙(`<<<SPEC>>>` 记号 + 人 accept)产 spec | codex + 人 |
-| `superpowers/spec-to-plan` | `{specText}` | 产分 task 的 TDD 计划(段头 `### Task N:`),人改稿 | codex + 人 |
-| `superpowers/execute-plan` | `{planText, testCmd?, gates?}` | 逐 task `backtrack`:写 → 测 → 审 → 不过回退 | deepseek 写 / codex 审 |
-| `superpowers/final-review` | `{testCmd?}` | 审全量 `git diff`,不过让 deepseek 修(≤2 轮) | codex 审 / deepseek 修 |
+| `superpowers/brainstorm-spec` | `{topic, maxTurns?}` | 两把钥匙(`<<<SPEC>>>` 记号 + 人 accept)产 spec | deepseek + 人 |
+| `superpowers/spec-to-plan` | `{specText}` | 产分 task 的 TDD 计划(段头 `### Task N:`),人改稿 | deepseek + 人 |
+| `superpowers/execute-plan` | `{planText, testCmd?, gates?}` | 逐 task `backtrack`:写 → 测 → 审 → 不过回退 | deepseek 写 / deepseek 审 |
+| `superpowers/final-review` | `{testCmd?}` | 审全量 `git diff`,不过让 deepseek 修(≤2 轮) | deepseek 审 / deepseek 修 |
 
 ## 分开跑的代价
 

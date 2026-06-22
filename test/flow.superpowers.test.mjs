@@ -37,15 +37,16 @@ describe("superpowers gate()", () => {
 
 describe("superpowers chain (gates:none)", () => {
   it("brainstorm→plan→execute→review 全链跑通 → status:done", async () => {
-    // codex 按链路调用顺序供文本:brainstorm记号草稿 → 计划 → 开发审APPROVE → 终审APPROVE
-    const codexTexts = [
+    // 非写调用(问/计划/审)按链路顺序供文本;写码(write:true)回 "written"。
+    // 全链现在都走 omp+deepseek,故以 write 标志区分角色,不再按 agent 类型。
+    const texts = [
       "<<<SPEC>>>\n# 设计稿\n做 foo",          // brainstorm(reuse,1 send)
       "### Task 1: 做 foo\n实现 foo 返回 42",   // spec-to-plan
-      "APPROVE",                                // execute-plan codex 审
-      "APPROVE",                                // final-review codex 审
+      "APPROVE",                                // execute-plan 审
+      "APPROVE",                                // final-review 审
     ];
-    const backend = async ({ agent }) => {
-      const text = agent === "codex" ? (codexTexts.shift() ?? "APPROVE") : "written";
+    const backend = async ({ agent, write }) => {
+      const text = write ? "written" : (texts.shift() ?? "APPROVE");
       return new FakeSession({ agent, deltas: [text] });
     };
     // io:brainstorm approve、spec-to-plan reviseWithHuman approve(gates:none 无其它人审)
@@ -66,13 +67,13 @@ describe("superpowers chain (gates:none)", () => {
   });
 
   it("开发 task 写不过 → status:halted(自动刹车,不进 review)", async () => {
-    const codexTexts = [
+    const texts = [
       "<<<SPEC>>>\n# 设计稿",                   // brainstorm
       "### Task 1: 做 foo\n实现 foo",           // plan
       "REJECT 不行", "REJECT 不行", "REJECT 不行", // execute 审:3 轮全拒
     ];
-    const backend = async ({ agent }) => {
-      const text = agent === "codex" ? (codexTexts.shift() ?? "REJECT") : "written";
+    const backend = async ({ agent, write }) => {
+      const text = write ? "written" : (texts.shift() ?? "REJECT");
       return new FakeSession({ agent, deltas: [text] });
     };
     const io = scriptedIo(["accept", "accept"]);

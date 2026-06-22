@@ -8,11 +8,11 @@
 import { agent, bash, backtrack, approve } from "synod/flow";
 
 export const meta = {
-  description: "按 plan 逐 task 开发:deepseek 写 → npm test → codex 审 → 不过带反馈回退",
+  description: "按 plan 逐 task 开发:deepseek 写 → npm test → deepseek 审 → 不过带反馈回退",
   // inputs: { planText, testCmd?, gates? }
 };
 
-const WRITER_MODEL = "deepseek/deepseek-v4-pro";
+const MODEL = "deepseek/deepseek-v4-pro";
 const TASK_HEADER = /^#{2,3}\s+Task\s+(\S+?):\s*(.+?)\s*$/;
 
 /**
@@ -51,11 +51,11 @@ export async function run(ctx, input) {
       initialPrompt:
         `实现下面这个 task,写出代码与必要测试:\n\n## Task ${task.id}: ${task.title}\n${task.body}`,
       produce: (ctx2, prompt) =>
-        agent(ctx2, { agent: "omp", model: WRITER_MODEL, write: true, workspace: "dev", prompt }),
+        agent(ctx2, { agent: "omp", model: MODEL, write: true, workspace: "dev", prompt }),
       review: async (_code) => {
         const tested = await bash(ctx, testCmd);
         const verdict = await agent(ctx, {
-          agent: "codex", write: false,
+          agent: "omp", model: MODEL, write: false,
           prompt:
             `审查刚完成的 task「${task.title}」。测试输出:\n` +
             `exit=${tested.code}\nstdout:\n${tested.stdout}\nstderr:\n${tested.stderr}\n\n` +
